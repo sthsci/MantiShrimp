@@ -2,7 +2,8 @@ cff-version: 1.2.0
 message: "If you use MantiShrimp, please cite this software using the metadata below."
 title: "MantiShrimp: agent-based modelling of killer immune cell-target cell interactions with Bayesian inference"
 type: software
-version: 0.1.0
+version: 0.2.0
+date-released: 2026-10-02
 license: MIT
 repository-code: "https://github.com/sthsci/MantiShrimp"
 url: "https://github.com/sthsci/MantiShrimp"

@@ -11,7 +11,7 @@ from mantishrimp import (
     Simulation,
     SimulationConfig,
 )
-from mantishrimp.simulation import _minimum_image
+from mantishrimp.simulation import _forces, _minimum_image
 
 
 ZERO_MOTILITY = MotilityConfig(
@@ -30,6 +30,56 @@ def test_minimum_image_geometry_crosses_periodic_boundary():
     domain = DomainConfig(x_min=-50.0, x_max=50.0, y_min=-50.0, y_max=50.0)
     displacement = _minimum_image(np.array([98.0, -97.0]), domain)
     np.testing.assert_allclose(displacement, [-2.0, 3.0])
+
+
+def test_bound_adhesion_adds_to_overlap_repulsion():
+    config = SimulationConfig(
+        n_killers=1, n_targets=1, killer_radius=0.5, target_radius=0.5,
+        mechanics=MechanicsConfig(repulsion_kt=10.0, adhesion_kt=2.0),
+    )
+    # L=1, Rcap=1.5; the bound equilibrium is L - F_A/Krep = 0.8.
+    for distance, unbound_force, bound_force in [
+        (0.0, 0.0, 0.0),  # coincident centres retain the existing zero guard
+        (0.5, 5.0, 3.0),
+        (0.8, 2.0, 0.0),
+        (0.9, 1.0, -1.0),
+        (1.0, 0.0, -2.0),
+        (1.5 - 1e-8, 0.0, -2.0),
+        (1.5, 0.0, 0.0),
+        (1.5 + 1e-8, 0.0, 0.0),
+    ]:
+        for bound, expected in [(False, unbound_force), (True, bound_force)]:
+            forces = _forces(
+                np.array([[distance, 0.0], [0.0, 0.0]]),
+                np.array([True, True]), np.array([[bound]]), config,
+            )
+            np.testing.assert_allclose(
+                forces, [[expected, 0.0], [-expected, 0.0]], atol=1e-12,
+            )
+
+
+def test_unbinding_at_force_balance_respects_drift_limit():
+    config = SimulationConfig(
+        n_killers=1, n_targets=1, killer_radius=0.5, target_radius=0.5,
+        duration=0.015, max_dt=0.1, max_drift_displacement=0.01, seed=3,
+        motility=ZERO_MOTILITY,
+        mechanics=MechanicsConfig(
+            repulsion_kt=10.0, adhesion_kt=2.0,
+            binding_rate=1e6, unbinding_rate=1e6,
+        ),
+        cytotoxicity=CytotoxicityConfig(killing_rate_max=0.0),
+    )
+    result = Simulation(config).run(
+        initial_killer_positions=np.array([[0.8, 0.0]]),
+        initial_target_positions=np.array([[0.0, 0.0]]),
+    )
+    assert {"synapse_formed", "synapse_ended"}.issubset(result.events["event"])
+    for _, snapshots in result.snapshots.groupby("cell_type"):
+        displacement = np.diff(snapshots[["x", "y"]].to_numpy(), axis=0)
+        assert np.all(
+            np.linalg.norm(displacement, axis=1)
+            <= config.max_drift_displacement + 1e-12
+        )
 
 
 def test_contact_synapse_and_kill_are_distinct_events():

@@ -192,16 +192,14 @@ def _forces(
                 target_index = target_global - n_k
                 is_bound = bool(bound[killer_index, target_index])
 
-            if distance < contact_distance:
-                pair_force = stiffness * (contact_distance - distance) * unit
-            elif (
+            pair_force = stiffness * max(contact_distance - distance, 0.0) * unit
+            # Bound adhesion adds to repulsion, including during overlap.
+            if (
                 is_bound
                 and distance
                 < config.mechanics.capture_radius_factor * contact_distance
             ):
-                pair_force = -config.mechanics.adhesion_kt * unit
-            else:
-                continue
+                pair_force -= config.mechanics.adhesion_kt * unit
             net[first] += pair_force
             net[second] -= pair_force
     return net
@@ -415,10 +413,26 @@ class Simulation:
         )[:, None]
 
         while time < config.duration:
+            _, distance = _kt_geometry(positions[:n_k], positions[n_k:], config.domain)
+            proximity_now = (distance <= proximity_cutoff) & target_alive[None, :]
+            capture_cutoff = config.mechanics.capture_radius_factor * contact_distance
             initial_forces = _forces(positions, alive, bound, config)
             deterministic_drift = speed * polarities + initial_forces
+            # A bond transition can change each cell's force by F_A. Include
+            # that bound before choosing dt, so probabilities use the final dt.
+            switchable = (
+                (
+                    (bound & (config.mechanics.unbinding_rate > 0))
+                    | (~bound & proximity_now & (config.mechanics.binding_rate > 0))
+                )
+                & (distance < capture_cutoff)
+                & target_alive[None, :]
+            )
+            drift_bound = np.linalg.norm(deterministic_drift, axis=1)
+            drift_bound[:n_k] += config.mechanics.adhesion_kt * switchable.sum(axis=1)
+            drift_bound[n_k:] += config.mechanics.adhesion_kt * switchable.sum(axis=0)
             maximum_drift = float(
-                np.max(np.linalg.norm(deterministic_drift[alive], axis=1), initial=0.0)
+                np.max(drift_bound[alive], initial=0.0)
             )
             adaptive_dt = (
                 config.max_drift_displacement / maximum_drift
@@ -429,9 +443,6 @@ class Simulation:
             next_time = time + dt
             next_step = step + 1
 
-            _, distance = _kt_geometry(positions[:n_k], positions[n_k:], config.domain)
-            proximity_now = (distance <= proximity_cutoff) & target_alive[None, :]
-            capture_cutoff = config.mechanics.capture_radius_factor * contact_distance
             p_bind = 1.0 - np.exp(-config.mechanics.binding_rate * dt)
             p_unbind = 1.0 - np.exp(-config.mechanics.unbinding_rate * dt)
 
