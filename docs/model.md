@@ -43,21 +43,44 @@ boundaries reflect both position and the corresponding polarity component.
 
 ## Mechanics and binding
 
-Overlapping cells repel with a Hookean force
+For centre distance `r > 0`, let `L = R_i + R_j` and let `unit_vector` point
+from cell j to cell i. All living cell pairs have the repulsive contribution
 
 ```text
-F_repulsion = k_pair * (r_contact - r) * unit_vector
+F_repulsion = k_pair * max(L - r, 0) * unit_vector
 ```
 
 using separate killer–killer, target–target, and killer–target stiffnesses.
-A bound killer–target pair beyond direct overlap and within the capture radius
-experiences constant Hookean-model adhesion.
+A bound killer–target pair also has a constant attractive contribution,
+including while the cells overlap:
+
+```text
+F_adhesion = -F_A * unit_vector    if bound and r < Rcap, otherwise 0
+F_pair = F_repulsion + F_adhesion
+```
+
+The forces on the two cells are equal and opposite. In overlap, the signed
+bound force is `k_pair * (L - r) - F_A`; the unbound force is
+`k_pair * (L - r)`. Beyond overlap, bound pairs attract with magnitude `F_A`
+until the capture cutoff; non-overlapping unbound pairs have no pair force.
+Thus a bound pair can have an equilibrium at `r = L - F_A/k_pair` when that
+distance is positive. An overlapping bound pair can attract or repel depending
+on which contribution is stronger. Exactly coincident centres retain the
+existing zero-force guard because their separation direction is undefined.
+
+This additive rule changes the v0.1.0 behaviour, which suppressed adhesion
+during overlap. Previously generated trajectories and inferred results should
+remain associated with their original software version.
 
 An unbound pair in proximity binds with probability
 `1 - exp(-k_bind * dt)`. A bound pair unbinds with probability
 `1 - exp(-k_unbind * dt)` and also separates deterministically beyond the
 capture radius. These rate-to-probability conversions make the stochastic
 rules consistent under changes to the integration step.
+The default formation threshold is `L + epsilon = 1.05L`, while
+`Rcap = 1.5L` limits retention of an existing bond. The force is zero at
+`r = Rcap`; deterministic bond removal uses `r > Rcap`. Binding is restricted
+to living killer–target pairs, and target death also ends the synapse.
 
 ## Cytotoxicity
 
@@ -87,8 +110,11 @@ rates.
 Each step computes an adaptive `dt`, updates binding/unbinding, recomputes
 forces, updates polarity and position, applies boundaries, integrates damage
 and exhaustion, resolves death/separation, then records contact transitions.
-The adaptive step limits the largest deterministic displacement while never
-exceeding `max_dt` or the remaining duration.
+The adaptive step includes a conservative bound on force changes from possible
+binding/unbinding events. This prevents a transition out of a force-balanced
+bound state from exceeding the deterministic displacement limit. The final
+`dt` is used for the transition probabilities and never exceeds `max_dt` or
+the remaining duration. Translational noise is not bounded by this drift limit.
 
 ## Inference observables
 

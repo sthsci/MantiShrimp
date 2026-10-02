@@ -244,15 +244,12 @@ def hook_net_force(r_ij, Krep, L, F_A, bound):
 
     e_ij = r_ij / delta
 
-    # repulsion should ALWAYS act if cells overlap
-    if delta < L:
-        return Krep * (L - delta) * e_ij
-
-    # adhesion only acts for bound pairs when not overlapping
+    # The caller applies Rcap; bound adhesion also acts during overlap.
+    force_magnitude = Krep * max(L - delta, 0.0)
     if bound:
-        return -F_A * e_ij
+        force_magnitude -= F_A
 
-    return np.zeros(2)
+    return force_magnitude * e_ij
 
 
 
