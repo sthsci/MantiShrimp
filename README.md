@@ -70,6 +70,7 @@ episode; a synapse is a stochastic bound state formed during contact. This
 keeps the biological mechanism separate from the observable used for
 inference.
 
+<!--
 ## Infer heterogeneity from ABM results
 
 The inference layer asks a population-level question: **are killer cells
@@ -171,6 +172,7 @@ This count likelihood is an observation model for ABM outputs; it does not by
 itself infer Hookean force constants, motility parameters, or causal cell-cell
 network structure. Those would require a separate calibration or
 simulation-based inference layer.
+-->
 
 ## Package map
 
