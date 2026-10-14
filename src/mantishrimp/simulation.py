@@ -166,7 +166,9 @@ def _forces(
         if not alive[first]:
             continue
         for second in range(first + 1, n_total):
-            if not alive[second]:
+            if not alive[second] and not (
+                first < n_k <= second and bound[first, second - n_k]
+            ):
                 continue
             displacement = _minimum_image(
                 positions[first] - positions[second], config.domain
@@ -418,19 +420,25 @@ class Simulation:
             capture_cutoff = config.mechanics.capture_radius_factor * contact_distance
             initial_forces = _forces(positions, alive, bound, config)
             deterministic_drift = speed * polarities + initial_forces
-            # A bond transition can change each cell's force by F_A. Include
-            # that bound before choosing dt, so probabilities use the final dt.
+            # Release removes adhesion for live targets and the whole pair force for dead ones.
             switchable = (
                 (
                     (bound & (config.mechanics.unbinding_rate > 0))
                     | (~bound & proximity_now & (config.mechanics.binding_rate > 0))
                 )
                 & (distance < capture_cutoff)
-                & target_alive[None, :]
+            )
+            force_change = switchable * np.where(
+                target_alive[None, :],
+                config.mechanics.adhesion_kt,
+                np.abs(
+                    config.mechanics.repulsion_kt * np.maximum(contact_distance - distance, 0.0)
+                    - config.mechanics.adhesion_kt
+                ),
             )
             drift_bound = np.linalg.norm(deterministic_drift, axis=1)
-            drift_bound[:n_k] += config.mechanics.adhesion_kt * switchable.sum(axis=1)
-            drift_bound[n_k:] += config.mechanics.adhesion_kt * switchable.sum(axis=0)
+            drift_bound[:n_k] += force_change.sum(axis=1)
+            drift_bound[n_k:] += force_change.sum(axis=0)
             maximum_drift = float(
                 np.max(drift_bound[alive], initial=0.0)
             )
@@ -451,7 +459,7 @@ class Simulation:
                     if bound[killer_id, target_id]:
                         separation = distance[killer_id, target_id] > capture_cutoff
                         stochastic = rng.random() < p_unbind
-                        if not target_alive[target_id] or separation or stochastic:
+                        if separation or stochastic:
                             bound[killer_id, target_id] = False
                             productive[killer_id, target_id] = False
                             _event(
@@ -461,13 +469,7 @@ class Simulation:
                                 name="synapse_ended",
                                 killer_id=killer_id,
                                 target_id=target_id,
-                                reason=(
-                                    "target_death"
-                                    if not target_alive[target_id]
-                                    else "separation"
-                                    if separation
-                                    else "stochastic"
-                                ),
+                                reason="separation" if separation else "stochastic",
                             )
                     elif proximity_now[killer_id, target_id] and rng.random() < p_bind:
                         bound[killer_id, target_id] = True
@@ -507,8 +509,6 @@ class Simulation:
 
             exhaustion_increment = np.zeros(n_k, dtype=float)
             for target_id in range(n_t):
-                if not target_alive[target_id]:
-                    continue
                 active_killers = np.flatnonzero(
                     bound[:, target_id] & productive[:, target_id]
                 )
@@ -522,8 +522,6 @@ class Simulation:
                         )
                         * killer_state[active_killers]
                     )
-                    target_damage[target_id] += float(individual_rates.sum()) * dt
-                    damage_contribution[active_killers, target_id] += individual_rates * dt
                     exhaustion_increment[active_killers] += (
                         config.cytotoxicity.exhaustion_rate_min
                         + (
@@ -532,6 +530,11 @@ class Simulation:
                         )
                         * target_state[target_id]
                     ) * dt
+                # Productive conjugation exhausts killers even after the target dies.
+                if not target_alive[target_id]:
+                    continue
+                target_damage[target_id] += float(individual_rates.sum()) * dt
+                damage_contribution[active_killers, target_id] += individual_rates * dt
                 target_damage[target_id] -= (
                     config.cytotoxicity.recovery_rate * target_damage[target_id] * dt
                 )
@@ -565,18 +568,6 @@ class Simulation:
                         target_id=target_id,
                         value=float(target_damage[target_id]),
                     )
-                    for killer_id in np.flatnonzero(bound[:, target_id]):
-                        _event(
-                            events,
-                            time=next_time,
-                            step=next_step,
-                            name="synapse_ended",
-                            killer_id=int(killer_id),
-                            target_id=target_id,
-                            reason="target_death",
-                        )
-                    bound[:, target_id] = False
-                    productive[:, target_id] = False
 
             killer_state *= np.clip(1.0 - exhaustion_increment, 0.0, 1.0)
             killer_state = np.clip(killer_state, 0.0, 1.0)

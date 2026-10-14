@@ -19,14 +19,15 @@ older Lennard–Jones scripts remain only as historical material.
 Each living cell has a position and an Ornstein–Uhlenbeck polarity. Killer
 cells additionally have a cytotoxic state in `[0, 1]` and a productive-synapse
 probability. Targets additionally have susceptibility and cumulative death
-factor. A killer–target pair can be in three increasingly specific states:
+factor. A living killer–target pair can be in three increasingly specific states:
 
 1. outside proximity;
 2. in physical contact;
 3. bound in a synapse, which may be productive or non-productive.
 
 The event table records transitions between these states rather than counting
-every simulation frame as a new interaction.
+every simulation frame as a new interaction. A bound synapse can persist after
+target death.
 
 ## Motility
 
@@ -40,6 +41,7 @@ dx = speed * p * dt + force * dt + sigma_x * sqrt(dt) * Normal(0, I)
 Killer and target populations have separate decay, noise, and speed
 parameters. Periodic calculations use minimum-image displacements. Confined
 boundaries reflect both position and the corresponding polarity component.
+Dead targets remain stationary, including while bound to a killer.
 
 ## Mechanics and binding
 
@@ -51,17 +53,20 @@ F_repulsion = k_pair * max(L - r, 0) * unit_vector
 ```
 
 using separate killer–killer, target–target, and killer–target stiffnesses.
-A bound killer–target pair also has a constant attractive contribution,
-including while the cells overlap:
+A bound killer–target pair retains repulsion and also has a constant attractive
+contribution, including after target death and while the cells overlap:
 
 ```text
 F_adhesion = -F_A * unit_vector    if bound and r < Rcap, otherwise 0
 F_pair = F_repulsion + F_adhesion
 ```
 
-The forces on the two cells are equal and opposite. In overlap, the signed
-bound force is `k_pair * (L - r) - F_A`; the unbound force is
-`k_pair * (L - r)`. Beyond overlap, bound pairs attract with magnitude `F_A`
+The forces on the two cells are equal and opposite. A dead target remains
+stationary, but the pair force still acts on each bound killer. Once a bond
+ends, the dead target no longer exerts forces on the released killer.
+In overlap, the signed bound force is `k_pair * (L - r) - F_A`;
+the unbound force between living cells is `k_pair * (L - r)`.
+Beyond overlap, bound pairs attract with magnitude `F_A`
 until the capture cutoff; non-overlapping unbound pairs have no pair force.
 Thus a bound pair can have an equilibrium at `r = L - F_A/k_pair` when that
 distance is positive. An overlapping bound pair can attract or repel depending
@@ -80,7 +85,11 @@ rules consistent under changes to the integration step.
 The default formation threshold is `L + epsilon = 1.05L`, while
 `Rcap = 1.5L` limits retention of an existing bond. The force is zero at
 `r = Rcap`; deterministic bond removal uses `r > Rcap`. Binding is restricted
-to living killer–target pairs, and target death also ends the synapse.
+to living killer–target pairs. Target death preserves all existing bonds and
+their productive states. These bonds end through the same stochastic
+unbinding or capture-radius separation rules as bonds to living targets.
+With `k_unbind = 0`, a bond survives target death unless the pair separates
+beyond the capture radius. Dead targets cannot form new bonds.
 
 ## Cytotoxicity
 
@@ -89,7 +98,7 @@ current killing probability. The reference homogeneous model sets this
 probability to one. Optional variation and per-synapse decay support later
 extensions without conflating binding with killing.
 
-Each productive bound killer contributes to target damage at
+Each productive bound killer exerts cytotoxic activity at
 
 ```text
 target_susceptibility * (
@@ -98,12 +107,20 @@ target_susceptibility * (
 )
 ```
 
-Target damage recovers at a first-order rate. A target dies once damage reaches
-the configured threshold. The kill event is assigned to the killer with the
-largest cumulative damage contribution, while all contributors remain
-recoverable from synapse history. Killer state decreases with productive
-synapse time according to target susceptibility and the configured exhaustion
-rates.
+For a living target, this activity accumulates damage, which recovers at a
+first-order rate. A target dies once damage reaches the configured threshold.
+The kill event is assigned to the killer with the largest cumulative damage
+contribution, while all contributors remain recoverable from synapse history.
+At death, damage is fixed at the threshold and attribution is final. Continued
+conjugation produces no further death or kill events.
+
+Productive killers continue cytotoxic activity and exhaustion while bound to
+a dead target. Killer state decreases with productive synapse time according
+to the target's susceptibility and the existing exhaustion rates. The same
+state-dependent activity formula applies before and after target death, so
+activity can decrease as killer state declines. A bond stops contributing to
+exhaustion when it ends. Non-productive bonds cause no exhaustion, and setting
+both exhaustion rates to zero leaves killer state unchanged.
 
 ## Integration order
 
@@ -115,6 +132,8 @@ binding/unbinding events. This prevents a transition out of a force-balanced
 bound state from exceeding the deterministic displacement limit. The final
 `dt` is used for the transition probabilities and never exceeds `max_dt` or
 the remaining duration. Translational noise is not bounded by this drift limit.
+For release from a dead target, the force-change bound includes removal of
+the full pair force, including overlap repulsion.
 
 ## Inference observables
 
@@ -128,3 +147,5 @@ Every killer is retained, including cells with zero events. The default
 exposure is the simulation duration. This is a population-level count model,
 not a full likelihood for trajectories or dependent contact networks; that
 assumption should be tested when calibrating against experimental data.
+Contact events track proximity to living targets and therefore end at target
+death. Synapse duration can extend beyond that contact episode until release.

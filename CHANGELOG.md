@@ -6,6 +6,26 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-14
+
+### Changed
+
+- In the package ABM, target death now preserves existing synapses until
+  stochastic unbinding at the configured rate or capture-radius separation.
+  Dead targets remain stationary and exert pair forces on bound killers.
+- Productive conjugation continues to exhaust killers after target death.
+  Dead-target damage and kill attribution remain fixed, and dead targets
+  cannot form new synapses.
+- The adaptive timestep accounts for removal of the full pair force when
+  a killer unbinds from a dead target. These model changes affect trajectories,
+  synapse durations, and subsequent killing relative to v0.2.0.
+
+### Added
+
+- Regression coverage for retained bonds and pair forces after death,
+  exhaustion until release, non-productive bonds, and the displacement limit
+  when unbinding from dead targets.
+
 ## [0.2.0] - 2026-10-02
 
 ### Changed
@@ -46,6 +66,7 @@ Initial public package release.
 - Synthetic validation, analysis, and plotting utilities extracted from Orca.
 - Typed configuration, documentation, packaging metadata, and unit tests.
 
-[Unreleased]: https://github.com/sthsci/MantiShrimp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/sthsci/MantiShrimp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sthsci/MantiShrimp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sthsci/MantiShrimp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sthsci/MantiShrimp/releases/tag/v0.1.0
