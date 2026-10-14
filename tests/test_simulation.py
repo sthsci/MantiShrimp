@@ -2,6 +2,7 @@ from dataclasses import replace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from mantishrimp import (
     CytotoxicityConfig,
@@ -32,7 +33,8 @@ def test_minimum_image_geometry_crosses_periodic_boundary():
     np.testing.assert_allclose(displacement, [-2.0, 3.0])
 
 
-def test_bound_adhesion_adds_to_overlap_repulsion():
+@pytest.mark.parametrize("target_alive", [True, False])
+def test_bound_adhesion_adds_to_overlap_repulsion(target_alive):
     config = SimulationConfig(
         n_killers=1, n_targets=1, killer_radius=0.5, target_radius=0.5,
         mechanics=MechanicsConfig(repulsion_kt=10.0, adhesion_kt=2.0),
@@ -49,9 +51,11 @@ def test_bound_adhesion_adds_to_overlap_repulsion():
         (1.5 + 1e-8, 0.0, 0.0),
     ]:
         for bound, expected in [(False, unbound_force), (True, bound_force)]:
+            if not target_alive and not bound:
+                expected = 0.0
             forces = _forces(
                 np.array([[distance, 0.0], [0.0, 0.0]]),
-                np.array([True, True]), np.array([[bound]]), config,
+                np.array([True, target_alive]), np.array([[bound]]), config,
             )
             np.testing.assert_allclose(
                 forces, [[expected, 0.0], [-expected, 0.0]], atol=1e-12,
@@ -122,6 +126,114 @@ def test_contact_synapse_and_kill_are_distinct_events():
         "target_died",
     }.issubset(set(result.events["event"]))
     assert result.summary()["targets_killed"] == 1
+    assert "synapse_ended" not in set(result.events["event"])
+
+
+@pytest.fixture
+def conjugation_config():
+    return SimulationConfig(
+        n_killers=1, n_targets=1, duration=4.0, max_dt=0.1, seed=3,
+        motility=ZERO_MOTILITY,
+        mechanics=MechanicsConfig(
+            repulsion_kk=0.0, repulsion_tt=0.0, repulsion_kt=0.0,
+            adhesion_kt=0.0, binding_rate=1000.0, unbinding_rate=0.0,
+        ),
+        cytotoxicity=CytotoxicityConfig(
+            killing_rate_max=5.0, death_threshold=0.2,
+            initial_target_state=0.5, recovery_rate=1.0,
+            exhaustion_rate_min=0.0, exhaustion_rate_max=0.5,
+        ),
+    )
+
+
+@pytest.mark.parametrize("unbinding_rate", [0.0, 1.0, 1e6])
+@pytest.mark.parametrize("exhaustion_rate", [0.0, 0.5])
+def test_dead_target_exhausts_killer_until_unbinding(
+    conjugation_config, unbinding_rate, exhaustion_rate,
+):
+    config = replace(
+        conjugation_config,
+        mechanics=replace(conjugation_config.mechanics, unbinding_rate=unbinding_rate),
+        cytotoxicity=replace(
+            conjugation_config.cytotoxicity, exhaustion_rate_max=exhaustion_rate,
+        ),
+    )
+    result = Simulation(config).run(
+        initial_killer_positions=np.array([[0.0, 0.0]]),
+        initial_target_positions=np.array([[22.0, 0.0]]),
+    )
+    deaths = result.events[result.events["event"] == "target_died"]
+    ends = result.events[result.events["event"] == "synapse_ended"]
+    assert len(deaths) == 1
+    assert result.kills_per_cell().tolist() == [1]
+    assert result.synapses_per_cell().tolist() == [1]  # No rebinding to the dead target.
+    if unbinding_rate == 0:
+        assert ends.empty
+        release_time = config.duration
+    else:
+        assert len(ends) == 1
+        assert ends.iloc[0]["reason"] == "stochastic"
+        release_time = ends.iloc[0]["time"]
+        assert deaths.iloc[0]["time"] <= release_time < config.duration
+        if unbinding_rate == 1.0:
+            assert release_time > deaths.iloc[0]["time"]
+
+    killers = result.snapshots[result.snapshots["cell_type"] == "killer"]
+    active_dt = np.diff(np.minimum(killers["time"].to_numpy(), release_time))
+    expected_state = np.r_[1.0, np.cumprod(1 - exhaustion_rate * 0.5 * active_dt)]
+    np.testing.assert_allclose(killers["state"], expected_state)
+    dead_targets = result.snapshots[
+        (result.snapshots["cell_type"] == "target") & ~result.snapshots["alive"]
+    ]
+    np.testing.assert_allclose(dead_targets["death_factor"], config.cytotoxicity.death_threshold)
+
+
+def test_nonproductive_bond_to_dead_target_does_not_exhaust(conjugation_config):
+    config = replace(
+        conjugation_config, n_killers=2,
+        cytotoxicity=replace(conjugation_config.cytotoxicity, kill_probability=0.5),
+    )
+    result = Simulation(config).run(
+        initial_killer_positions=np.array([[-22.0, 0.0], [22.0, 0.0]]),
+        initial_target_positions=np.array([[0.0, 0.0]]),
+    )
+    formed = result.events[result.events["event"] == "synapse_formed"]
+    assert formed["value"].tolist() == [1.0, 0.0]
+    assert "synapse_ended" not in set(result.events["event"])
+    assert result.kills_per_cell().tolist() == [1, 0]
+    killers = result.snapshots[result.snapshots["cell_type"] == "killer"]
+    productive = killers[killers["cell_id"] == 0]
+    assert np.all(np.diff(productive["state"]) < 0)
+    np.testing.assert_allclose(killers[killers["cell_id"] == 1]["state"], 1.0)
+
+
+def test_dead_target_release_respects_drift_limit(conjugation_config):
+    config = replace(
+        conjugation_config, n_targets=2, killer_radius=0.5, target_radius=0.5,
+        duration=1.0, max_drift_displacement=0.01,
+        mechanics=replace(
+            conjugation_config.mechanics, repulsion_kt=10.0,
+            binding_rate=1e6, unbinding_rate=5.0,
+        ),
+        cytotoxicity=replace(conjugation_config.cytotoxicity, death_threshold=1e-6),
+    )
+    result = Simulation(config).run(
+        initial_killer_positions=np.array([[0.0, 0.0]]),
+        initial_target_positions=np.array([[-0.2, 0.0], [0.2, 0.0]]),
+    )
+    assert result.kills_per_cell().tolist() == [2]
+    ends = result.events[result.events["event"] == "synapse_ended"]
+    assert len(ends) == 2
+    assert (ends["reason"] == "stochastic").all()
+    for _, snapshots in result.snapshots.groupby(["cell_type", "cell_id"]):
+        displacement = np.diff(snapshots[["x", "y"]].to_numpy(), axis=0)
+        assert np.all(
+            np.linalg.norm(displacement, axis=1)
+            <= config.max_drift_displacement + 1e-12
+        )
+        dead = snapshots[~snapshots["alive"]]
+        if not dead.empty:
+            np.testing.assert_allclose(np.diff(dead[["x", "y"]], axis=0), 0.0)
 
 
 def test_zero_event_cells_are_retained():
