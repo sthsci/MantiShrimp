@@ -287,3 +287,58 @@ def test_result_can_be_saved(tmp_path):
     assert (output / "events.csv").is_file()
     assert (output / "final_cells.csv").is_file()
     assert (output / "config.json").is_file()
+
+
+@pytest.mark.parametrize("instant", [False, True])
+def test_instant_kill_preserves_bonds_even_without_cumulative_damage(conjugation_config, instant):
+    config = replace(
+        conjugation_config, duration=0.3,
+        cytotoxicity=CytotoxicityConfig(
+            killing_rate_max=0.0, initial_target_state=0.0, instant_kill=instant,
+            exhaustion_rate_min=0.1, exhaustion_rate_max=0.1,
+        ),
+    )
+    result = Simulation(config).run(
+        initial_killer_positions=np.array([[0.0, 0.0]]),
+        initial_target_positions=np.array([[22.0, 0.0]]),
+    )
+    targets = result.snapshots[result.snapshots.cell_type == "target"]
+    assert targets.alive.iloc[1:].eq(not instant).all()
+    assert targets.synapses.iloc[1:].tolist() == [[0]] * (len(targets) - 1)
+    assert result.kills_per_cell().tolist() == [int(instant)]
+    if instant:
+        assert targets.primary_killer.iloc[1:].eq(0).all()
+        assert targets.death_factor.iloc[1:].eq(config.cytotoxicity.death_threshold).all()
+    killers = result.snapshots[result.snapshots.cell_type == "killer"]
+    assert np.all(np.diff(killers.state) < 0)
+
+
+@pytest.mark.parametrize("name, values", [
+    ("initial_killer_state", [0.5, 0.5]),
+    ("initial_target_state", [np.nan]),
+    ("initial_kill_probability", [1.1]),
+    ("initial_death_factor", [-0.1]),
+    ("initial_death_factor", [1.0]),
+    ("initial_killer_positions", [[np.inf, 0.0]]),
+])
+def test_explicit_initial_arrays_are_validated(conjugation_config, name, values):
+    initial = dict(
+        initial_killer_positions=np.array([[0.0, 0.0]]),
+        initial_target_positions=np.array([[22.0, 0.0]]),
+    )
+    initial[name] = np.array(values)
+    with pytest.raises(ValueError):
+        Simulation(conjugation_config).run(**initial)
+
+
+def test_run_does_not_mutate_initial_arrays(conjugation_config):
+    initial = dict(
+        initial_killer_positions=np.array([[0.0, 0.0]]),
+        initial_target_positions=np.array([[22.0, 0.0]]),
+        initial_killer_state=np.array([0.8]), initial_target_state=np.array([0.5]),
+        initial_death_factor=np.array([0.0]), initial_kill_probability=np.array([1.0]),
+    )
+    saved = {key: value.copy() for key, value in initial.items()}
+    Simulation(conjugation_config).run(**initial)
+    for key in initial:
+        np.testing.assert_array_equal(initial[key], saved[key])

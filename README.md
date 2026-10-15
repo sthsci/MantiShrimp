@@ -15,8 +15,9 @@ The package has two connected layers:
 - the four Bayesian count models from the Orca inference work, applicable to
   either contacts per killer cell or kills per killer cell.
 
-The historical scripts and notebooks remain in the repository as provenance.
-New work should use the importable package under `src/mantishrimp`.
+The simulation engine lives in `src/mantishrimp`. The existing
+`script/simulator/simulator.py` entry point calls that same engine and keeps
+the `KTSimulator` arguments and six returned outputs used by older notebooks.
 
 ## ABM demonstration
 
@@ -69,6 +70,35 @@ Contacts and synapses are deliberately different. A contact is a proximity
 episode; a synapse is a stochastic bound state formed during contact. This
 keeps the biological mechanism separate from the observable used for
 inference.
+
+### Use an existing simulation script or notebook
+
+Keep using `from simulator import KTSimulator` when your notebook already adds
+`script/simulator` to its Python path. From the repository root, you can also use:
+
+```python
+from script.simulator.simulator import KTSimulator
+
+history, killers, targets, probabilities, damage, settings = KTSimulator(
+    N_KILLER=10, N_TARGET=40, SIM_DURATION=1.0, RNG_SEED=42, ini_seed=42,
+)
+```
+
+Both entry points use the same movement, binding, death and exhaustion rules.
+Dead targets retain existing bonds until unbinding or capture-radius separation;
+productive killers continue to exhaust while bound. Released dead targets cannot
+bind again or affect unbound cells.
+
+The legacy arguments retain their defaults and spatial initialisers, so matching
+trajectories requires matching parameters, initial cell states and positions,
+and the dynamics seed. `RECOVERY=True` uses cumulative damage; `RECOVERY=False`
+preserves the legacy instant-kill mode. To use the package interface directly
+from the simulator folder, import `SimulationConfig` and `simulate` from
+`simulator`; these are the package objects themselves.
+
+Keep the repository folders together; copying only `simulator.py` is insufficient.
+Restart the notebook kernel after updating the code. Edit model rules in
+`src/mantishrimp/simulation.py`; both entry points will use those changes.
 
 <!--
 ## Infer heterogeneity from ABM results

@@ -1,6 +1,12 @@
+# Resolve the engine from this checkout even when a notebook runs elsewhere.
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+
+from mantishrimp import DomainConfig, MechanicsConfig, SimulationConfig
+from mantishrimp.simulation import _bond_transitions, _forces, _kt_geometry
+
 import numpy as np
-import pandas as pd
-from tqdm import tqdm
 
 
 def poisson_disk_samples_rectangle(width, height, r, k=30, seed=None, max_points=None):
@@ -268,116 +274,35 @@ def calculate_ij_forces(
     dt
 ):
 
-    N_TOTAL = N_KILLER + N_TARGET
+    """Legacy pair-force interface using the package's bond and force rules.
 
+    This standalone helper has no domain argument and uses Euclidean geometry;
+    KTSimulator uses Simulation.run, including its configured boundary geometry.
+    """
+    config = SimulationConfig(
+        n_killers=N_KILLER, n_targets=N_TARGET,
+        killer_radius=KILLER_RADIUS, target_radius=TARGET_RADIUS,
+        domain=DomainConfig(boundary="confined"),
+        mechanics=MechanicsConfig(
+            repulsion_kk=KREP_KK, repulsion_tt=KREP_TT, repulsion_kt=KREP_KT,
+            adhesion_kt=F_A_KT, binding_rate=k_bind, unbinding_rate=k_unbind,
+        ),
+    )
+    config.validate()
     positions = np.vstack([killer_positions, target_positions])
-    labels = np.array([0]*N_KILLER + [1]*N_TARGET)
     alive = np.concatenate([killer_alive, target_alive])
+    _, distance = _kt_geometry(killer_positions, target_positions, config.domain)
+    contact_distance = KILLER_RADIUS + TARGET_RADIUS
+    eligible = (
+        (distance <= contact_distance * (1 + config.mechanics.contact_tolerance_factor))
+        & np.asarray(killer_alive)[:, None] & np.asarray(target_alive)[None, :]
+    )
+    for _ in _bond_transitions(
+        is_bound, distance, eligible, config.mechanics, contact_distance, dt, rng
+    ):
+        pass
+    return _forces(positions, alive, is_bound, config, pairwise=True), is_bound
 
-    force = np.zeros((N_TOTAL, N_TOTAL, 2))
-    p_bind_step = 1 - np.exp(-k_bind * dt)
-    p_unbind_step = 1 - np.exp(-k_unbind * dt)
-
-    for j in range(N_TOTAL):
-        if not alive[j]:
-            continue
-
-        for k in range(j+1, N_TOTAL):
-            if not alive[k]:
-                continue
-
-            r_ij = positions[j] - positions[k]
-            dist = np.linalg.norm(r_ij)
-
-            # default
-            bound = False
-
-
-            # parameter selection
-            if labels[j] == 0 and labels[k] == 0:
-                Krep, F_A = KREP_KK, F_A_KK
-                L = KILLER_RADIUS * 2
-                
-            elif labels[j] == 1 and labels[k] == 1:
-                Krep, F_A = KREP_TT, F_A_TT
-                L = TARGET_RADIUS * 2
-                
-            else:
-                Krep, F_A = KREP_KT, F_A_KT
-                L = KILLER_RADIUS + TARGET_RADIUS
-                
-            
-            Rcap = 1.5 * L #from the paper
-            contact_tol = 0.05 * L
-            bind_possible = dist <= (L + contact_tol)
-
-            # killer-target binding logic
-            if labels[j] == 0 and labels[k] == 1:
-
-                killer_idx = j
-                target_idx = k - N_KILLER
-
-                if is_bound[killer_idx, target_idx]:
-
-                    if dist > Rcap or rng.random() < p_unbind_step:
-                        is_bound[killer_idx, target_idx] = False
-
-                else:
-
-                    if bind_possible and rng.random() < p_bind_step:
-                        is_bound[killer_idx, target_idx] = True
-
-                bound = is_bound[killer_idx, target_idx]
-
-            if dist < Rcap:
-                f = hook_net_force(r_ij, Krep, L, F_A, bound)
-                force[j, k] += f
-                force[k, j] -= f
-
-    return force, is_bound
-
-
-
-#def calculate_ij_forces(
-    #N_KILLER, N_TARGET,
-    #*,
-    #killer_positions, target_positions, 
-    #killer_alive, target_alive,
-    #LJ_EPSILON_KK, LJ_EPSILON_TT, LJ_EPSILON_KT,
-    #SIGMA_KK, SIGMA_TT, SIGMA_KT):
-    #"""
-    #Compute the IJ forces, only for alive cells.
-    #Returns force array: shape (N_TOTAL, N_TOTAL, 2)
-    #"""
-    #N_K = N_KILLER
-    #N_T = N_TARGET
-    #N_TOTAL = N_K + N_T
-
-    #positions = np.vstack([killer_positions, target_positions])
-    #labels = np.array([0]*N_K + [1]*N_T)
-    #alive = np.concatenate([killer_alive, target_alive])
-
-    #force = np.zeros((N_TOTAL, N_TOTAL, 2))
-    #for j in range(N_TOTAL):
-        #if not alive[j]:
-        #    continue
-        #for k in range(j+1, N_TOTAL):
-         #   if not alive[k]:
-         #       continue
-         #   r_ij = positions[j] - positions[k]
-         #   # Determine epsilon and sigma
-         #   if labels[j] == 0 and labels[k] == 0:
-         #       sigma, epsilon = SIGMA_KK, LJ_EPSILON_KK
-         #   elif labels[j] == 1 and labels[k] == 1:
-         #       sigma, epsilon = SIGMA_TT, LJ_EPSILON_TT
-         #  else:
-         #       sigma, epsilon = SIGMA_KT, LJ_EPSILON_KT
-         #   dist = np.linalg.norm(r_ij)
-         #   if 0 < dist <= 2.5 * sigma:
-         #       f = lj_force(r_ij, epsilon, sigma)
-         #       force[j, k] += f
-         #       force[k, j] -= f
-    #return force
 
 def KillingProb_ini(N_KILLER, KILL_PROB_INIT=None, KILL_PROBABILISTIC=True):
     """

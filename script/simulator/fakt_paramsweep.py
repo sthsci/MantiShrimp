@@ -3,8 +3,10 @@ import numpy as np
 import pandas as pd
 import random
 
-import NEWsimulator
-from NEWsimulator import KTSimulator
+if __package__:
+    from .simulator import KTSimulator
+else:
+    from simulator import KTSimulator
 
 seed = 42
 np.random.seed(seed)

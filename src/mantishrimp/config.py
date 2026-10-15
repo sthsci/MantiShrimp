@@ -96,6 +96,7 @@ class CytotoxicityConfig:
     initial_death_factor_sd: float = 0.0
     exhaustion_rate_min: float = 0.001
     exhaustion_rate_max: float = 0.1
+    instant_kill: bool = False
 
     def validate(self) -> None:
         if self.killing_rate_min < 0 or self.killing_rate_max < self.killing_rate_min:

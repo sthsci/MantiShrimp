@@ -6,6 +6,31 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `script/simulator/simulator.py` now delegates to the package engine. Existing
+  `KTSimulator` calls receive the post-death binding and continued exhaustion
+  rules while retaining their arguments and six returned outputs.
+- The standalone force helper uses the package's binding and pair-force routines,
+  and the three parameter sweeps import the maintained simulator entry point.
+
+### Changed
+
+- Legacy simulations now use package integration, periodic geometry and primary
+  kill attribution. Their `contacts` lists retain dead-target bonds until release,
+  and `killed_by` records one primary killer per death.
+- `RNG_SEED` controls legacy population sampling and dynamics reproducibly.
+  Invalid initial states, probabilities and death factors are rejected.
+
+### Added
+
+- Explicit initial population arrays in `Simulation.run`, snapshot synapse IDs,
+  killing probabilities and primary-killer IDs for legacy output conversion.
+- Shared instant-kill mode for legacy `RECOVERY=False` calls. The package default
+  still uses cumulative damage.
+- Regression checks comparing script and package trajectories under identical
+  inputs, plus legacy post-death binding, exhaustion, initialisation and imports.
+
 ## [0.3.0] - 2026-10-14
 
 ### Changed

@@ -13,6 +13,9 @@ the micrometre/minute interpretation used in Szonja Skenderovic's thesis.
 
 The package implements the refined Hookean model as its maintained core. The
 older Lennard–Jones scripts remain only as historical material.
+The Hookean `KTSimulator` entry point in `script/simulator/simulator.py` delegates
+time integration to this same core. Its initialisation and output conversion
+preserve the notebook interface without a second set of model rules.
 
 ## State
 
@@ -114,6 +117,13 @@ contribution, while all contributors remain recoverable from synapse history.
 At death, damage is fixed at the threshold and attribution is final. Continued
 conjugation produces no further death or kill events.
 
+An optional `instant_kill=True` mode preserves the legacy `RECOVERY=False`
+setting. A productive bond then causes death in that integration step, with
+credit assigned to the first productive killer in cell-ID order. Damage is set
+to the death threshold. Binding, post-death exhaustion and release follow the
+same rules as the cumulative-damage mode. The package default remains
+`instant_kill=False`.
+
 Productive killers continue cytotoxic activity and exhaustion while bound to
 a dead target. Killer state decreases with productive synapse time according
 to the target's susceptibility and the existing exhaustion rates. The same
@@ -149,3 +159,29 @@ not a full likelihood for trajectories or dependent contact networks; that
 assumption should be tested when calibrating against experimental data.
 Contact events track proximity to living targets and therefore end at target
 death. Synapse duration can extend beyond that contact episode until release.
+
+## Legacy interface
+
+`KTSimulator` preserves the existing argument names and six-part return value.
+Its `contacts` column contains bound-synapse IDs, including bonds retained after
+death. Its `killed_by` column contains a singleton list with the primary killer,
+or `None` before an attributed death. This follows the package's one-kill-per-death
+counting rule, replacing the older script's multiple-killer list.
+
+Package snapshots also record `synapses`, `kill_probability` and `primary_killer`,
+so the legacy output is a direct conversion of recorded engine state.
+`Simulation.run` accepts explicit initial positions, killer and target states,
+kill probabilities and death factors. Initial arrays must have the population's
+shape and contain finite values; states and probabilities must lie in `[0, 1]`,
+and death factors between zero and the death threshold. The legacy wrapper uses
+these inputs for its existing spatial layouts and state mixtures. Invalid sampled
+probabilities or death factors are rejected rather than used outside their bounds.
+
+Legacy defaults and initial placement differ from package defaults. Identical
+trajectories require the same configuration, initial arrays and dynamics seed.
+`RNG_SEED` now controls population sampling and dynamics without depending on
+the caller's global NumPy seed; `ini_seed` can override the placement seed.
+The legacy arguments `F_A_KK`, `F_A_TT` and `DISAPPEAR_DELAY` remain inactive.
+The standalone `calculate_ij_forces` helper delegates to the shared binding and
+force routines. Its signature has no domain argument, so it retains Euclidean
+geometry; full simulations use the configured periodic or confined geometry.

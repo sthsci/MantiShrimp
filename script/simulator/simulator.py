@@ -1,9 +1,22 @@
+"""Legacy notebook interface to the shared engine in src/mantishrimp."""
+
 import numpy as np
-import pandas as pd
-from tqdm import tqdm
-import sys
-sys.path.append('./')
-from assistant_function import *
+
+if __package__:
+    from .assistant_function import (
+        generate_two_populations, KillingProb_ini, DeathFactor_ini, CellState_ini,
+        calculate_ij_forces,
+    )
+else:
+    from assistant_function import (
+        generate_two_populations, KillingProb_ini, DeathFactor_ini, CellState_ini,
+        calculate_ij_forces,
+    )
+
+from mantishrimp import (
+    CytotoxicityConfig, DomainConfig, MechanicsConfig, MotilityConfig,
+    Simulation, SimulationConfig, simulate,
+)
 
 
 def KTSimulator(
@@ -87,425 +100,89 @@ def KTSimulator(
     
 ):
     
-    MIN_KILLING_RATE = 0.0
-    MAX_KILLING_RATE = 1.0
-    '''--- Initialisation the migration for all cells (polarities and positions) ---'''
-    killer_positions_input, target_positions_input = generate_two_populations(
-        N1=N_KILLER, N2 = N_TARGET,
-        radius1 = KILLER_RADIUS, radius2=TARGET_RADIUS,
-        shape  = region_shape,
-        mode   = init_mode,
-        sigma  = init_sigma,
-        bounds = init_cell_bound if init_cell_bound is not None else (0.9*BOX_X_MIN, 0.9*BOX_X_MAX, 0.9*BOX_Y_MIN, 0.9*BOX_Y_MAX),
-        centre = ini_cell_centre,
-        region_radius = ini_cell_region_radius,
-        seed   = ini_seed,
-        min_distance_factor = min_distance_factor
+    """Run the package engine and return the six legacy notebook outputs.
+
+    Spatial and population initialisers retain the script interface. All time
+    integration, binding, death and exhaustion are handled by Simulation.run.
+    RECOVERY=False selects instant killing; True uses cumulative damage.
+    F_A_KK, F_A_TT and DISAPPEAR_DELAY remain unused compatibility arguments.
+    """
+    arguments = locals().copy()
+    for name, value in arguments.items():
+        if isinstance(value, (float, np.floating)) and not np.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+    if kill_prob_mode not in {"constant", "decay"}:
+        raise ValueError("kill_prob_mode must be 'constant' or 'decay'")
+    config = SimulationConfig(
+        n_killers=N_KILLER, n_targets=N_TARGET,
+        killer_radius=KILLER_RADIUS, target_radius=TARGET_RADIUS,
+        duration=SIM_DURATION, max_dt=DT0, max_drift_displacement=DS,
+        seed=RNG_SEED, initial_separation_factor=min_distance_factor,
+        domain=DomainConfig(BOX_X_MIN, BOX_X_MAX, BOX_Y_MIN, BOX_Y_MAX, boundary_condition),
+        motility=MotilityConfig(
+            killer_polarity_decay=KILLER_POL_DECAY, target_polarity_decay=TARGET_POL_DECAY,
+            killer_polarity_noise=KILLER_POL_NOISE, target_polarity_noise=TARGET_POL_NOISE,
+            killer_speed=KILLER_MOTILITY, target_speed=TARGET_MOTILITY,
+            killer_translation_noise=KILLER_TRANS_NOISE,
+            target_translation_noise=TARGET_TRANS_NOISE,
+        ),
+        mechanics=MechanicsConfig(
+            repulsion_kk=KREP_KK, repulsion_tt=KREP_TT, repulsion_kt=KREP_KT,
+            adhesion_kt=F_A_KT, binding_rate=K_BIND, unbinding_rate=K_UNBIND,
+        ),
+        cytotoxicity=CytotoxicityConfig(
+            death_threshold=KILL_DEATH_THRESHOLD,
+            recovery_rate=RECOVERY_SPEED if RECOVERY else 0.0,
+            instant_kill=not RECOVERY,
+            kill_probability_decay_per_synapse=(
+                DECAY_PER_CONTACT if kill_prob_mode == "decay" else 0.0
+            ),
+            exhaustion_rate_min=MIN_STATE_DECAY_dt, exhaustion_rate_max=MAX_STATE_DECAY_dt,
+        ),
     )
-    
-    killer_positions = np.expand_dims(killer_positions_input, axis=0)
-    target_positions = np.expand_dims(target_positions_input, axis=0)
-    
-    killer_polarity = np.zeros((1, N_KILLER, 2))
-    target_polarity = np.zeros((1, N_TARGET, 2))
-    
-    #SIGMA_KK = (2 * KILLER_RADIUS) / (2 ** (1/6))
-    #SIGMA_TT = (2 * TARGET_RADIUS) / (2 ** (1/6))
-    #SIGMA_KT = (KILLER_RADIUS + TARGET_RADIUS) / (2 ** (1/6))
-    
-    '''--- Initialisation the killing and death parameters---'''
-    
-    ## Killing Probability initialisation
-    kill_init = KillingProb_ini(N_KILLER, KILL_PROB_INIT, KILL_PROBABILISTIC)
-    killingProbability_history = [kill_init]
-    killer_state_init = CellState_ini(N_KILLER, STATE_INIT = KILLER_STATE_INIT)
-    killer_state_history = [killer_state_init]
-    
-    ## Death Factor initialisation
-    death_init = DeathFactor_ini(N_TARGET, DEATH_FAC_INIT)
-    DeathFactor_history = [death_init]
-    target_sen_state_init = CellState_ini(N_TARGET, STATE_INIT = TARGET_STATE_INIT)
-    target_state_history = [target_sen_state_init]
-    
-    ## Death status initialisation
-    kill_prob_mode = kill_prob_mode  # 'constant'or 'decay'
-    decay_per_contact = DECAY_PER_CONTACT     # Only relevant for 'decay' mode
-    
-    if RNG_SEED is not None:
+    engine = Simulation(config)
+    # The old initialisers use numpy's global RNG; seed them without changing caller state.
+    random_state = np.random.get_state()
+    try:
         np.random.seed(RNG_SEED)
-    
-    is_bound = np.zeros((N_KILLER, N_TARGET), dtype=bool)
-    rng = np.random.default_rng(RNG_SEED)
-    
-    '''--- Time arrays for analysis and animation ---'''
-    step_list, dt_list, processed_time_list = [], [], []
-    step, processed_time, dt = 0, 0, DT0
-    
-    '''--- Main Simulation Time Loop ---'''
-    pbar = tqdm(total=SIM_DURATION, desc="Simulation progress", leave=False)
-    cell_history_df = pd.DataFrame()
-    # Tracking variables for contact/killing
-    kill_decision_map = dict()
-    contact_counts = np.zeros((N_KILLER, N_TARGET), dtype=int)
-    prev_contact_matrix = np.zeros((N_KILLER, N_TARGET), dtype=bool)
-    current_kill_probs = killingProbability_history[0].copy()
+        killer_positions, target_positions = generate_two_populations(
+            N1=N_KILLER, N2=N_TARGET, radius1=KILLER_RADIUS, radius2=TARGET_RADIUS,
+            shape=region_shape, mode=init_mode, sigma=init_sigma,
+            bounds=init_cell_bound if init_cell_bound is not None else (
+                0.9 * BOX_X_MIN, 0.9 * BOX_X_MAX, 0.9 * BOX_Y_MIN, 0.9 * BOX_Y_MAX
+            ),
+            centre=ini_cell_centre, region_radius=ini_cell_region_radius,
+            seed=ini_seed if ini_seed is not None else RNG_SEED,
+            min_distance_factor=min_distance_factor,
+        )
+        killer_state = CellState_ini(N_KILLER, KILLER_STATE_INIT)
+        target_state = CellState_ini(N_TARGET, TARGET_STATE_INIT)
+        probabilities = KillingProb_ini(N_KILLER, KILL_PROB_INIT, KILL_PROBABILISTIC)
+        damage = DeathFactor_ini(N_TARGET, DEATH_FAC_INIT)
+    finally:
+        np.random.set_state(random_state)
 
-    # Bookkeeping for cell contacts and "killed by"
-    killer_contacts_this_step = [[] for _ in range(N_KILLER)]
-    target_contacts_this_step = [[] for _ in range(N_TARGET)]
-    target_killed_by = [[] for _ in range(N_TARGET)]
-    last_killers_for_target = [None for _ in range(N_TARGET)]
-    
-    net_force = np.zeros((N_KILLER + N_TARGET, 2))
-
-    alive_killers = np.ones(N_KILLER, dtype=bool)
-    alive_targets = np.ones(N_TARGET, dtype=bool)
-
-    while processed_time < SIM_DURATION:
-        step_list.append(step)
-        dt_list.append(dt)
-        processed_time_list.append(processed_time)
-        current_killer_states = killer_state_history[step] if step < len(killer_state_history) else killer_state_history[-1]
-        current_target_states = target_state_history[step] if step < len(target_state_history) else target_state_history[-1]
-        
-        if step == 0:
-            #alive_killers = np.ones(N_KILLER, dtype=bool)
-            #alive_targets = np.ones(N_TARGET, dtype=bool)
-            # Clear contact lists
-            killer_contacts_this_step = [[] for _ in range(N_KILLER)]
-            target_contacts_this_step = [[] for _ in range(N_TARGET)]
-            target_killed_by = [[] for _ in range(N_TARGET)]
-            
-            
-        else: 
-            
-            #Select the alived cells
-            #alive_killers = cell_history_df[
-             #   (cell_history_df['step'] == step-1) &
-             #   (cell_history_df['cell_type'] == 'killer')
-             #   ].sort_values('cell_id')['alive_status'].values # shape: (N_KILLER, bool)
-            #alive_targets = cell_history_df[
-             #   (cell_history_df['step'] == step-1) &
-             #   (cell_history_df['cell_type'] == 'target')
-             #   ].sort_values('cell_id')['alive_status'].values # shape: (N_TARGET, bool)
-            
-            # ---Polarity Update---
-            killer_noise_mu = np.sqrt(dt) * np.random.randn(N_KILLER, 2) # Calculate the noise
-            target_noise_mu = np.sqrt(dt) * np.random.randn(N_TARGET, 2)
-            killer_polarity = np.concatenate((killer_polarity, np.zeros((1, N_KILLER, 2))), axis=0)
-            target_polarity = np.concatenate((target_polarity, np.zeros((1, N_TARGET, 2))), axis=0)
-            killer_polarity[step] = (
-                killer_polarity[step-1] - KILLER_POL_DECAY * killer_polarity[step-1] * dt + KILLER_POL_NOISE * killer_noise_mu
-            )
-            target_polarity[step] = (
-                target_polarity[step-1] - TARGET_POL_DECAY * target_polarity[step-1] * dt + TARGET_POL_NOISE * target_noise_mu
-            )
-            
-            killer_pol_alive   = killer_polarity[step][alive_killers]
-            target_pol_alive   = target_polarity[step][alive_targets]
-            
-            ## ---Position Update---
-            killer_noise_r = np.sqrt(dt) * np.random.randn(N_KILLER, 2) # noise calculation
-            target_noise_r = np.sqrt(dt) * np.random.randn(N_TARGET, 2)
-            
-            new_killer_pos  = killer_positions[step-1].copy()
-            new_target_pos  = target_positions[step-1].copy()
-            
-            #forces = calculate_ij_forces(
-                #N_KILLER, N_TARGET,
-                #killer_positions=killer_positions[step-1],
-                #target_positions=target_positions[step-1],
-                #killer_alive=alive_killers,  
-                #target_alive=alive_targets,  
-                #LJ_EPSILON_KK=LJ_EPSILON_KK, LJ_EPSILON_TT=LJ_EPSILON_TT, LJ_EPSILON_KT=LJ_EPSILON_KT,
-                #SIGMA_KK=SIGMA_KK, SIGMA_TT=SIGMA_TT, SIGMA_KT=SIGMA_KT,
-                #)
-
-            forces, is_bound = calculate_ij_forces(
-                N_KILLER, N_TARGET,
-                killer_positions=killer_positions[step-1],
-                target_positions=target_positions[step-1],
-                killer_alive=alive_killers,
-                target_alive=alive_targets,
-                KREP_KK=KREP_KK,
-                KREP_TT=KREP_TT,
-                KREP_KT=KREP_KT,
-                F_A_KK=F_A_KK,
-                F_A_TT=F_A_TT,
-                F_A_KT=F_A_KT,
-                KILLER_RADIUS=KILLER_RADIUS,
-                TARGET_RADIUS=TARGET_RADIUS,
-                is_bound=is_bound,
-                rng=rng,
-                k_bind=K_BIND,
-                k_unbind=K_UNBIND,
-                dt=dt
-                )
-            all_forces = np.sum(forces, axis=1)
-            
-            N_TOTAL = N_KILLER + N_TARGET
-            polarity_force = np.zeros((N_TOTAL, 2))
-            polarity_force[:N_KILLER][alive_killers] = killer_pol_alive
-            polarity_force[N_KILLER:][alive_targets] = target_pol_alive
-            net_force = np.sum(forces, axis=1) + polarity_force
-            
-            dt = adaptive_time_step(
-                net_force, DS, DT0, processed_time, SIM_DURATION
-            )
-            dt_list.append(dt)
-            
-            new_killer_pos[alive_killers] = (
-                killer_positions[step-1][alive_killers]
-                + KILLER_MOTILITY * killer_polarity[step-1][alive_killers] * dt
-                + KILLER_TRANS_NOISE * killer_noise_r[alive_killers]
-                + all_forces[:N_KILLER][alive_killers] * dt
-                )
-            new_target_pos[alive_targets] = (
-                target_positions[step-1][alive_targets]
-                + TARGET_MOTILITY * target_polarity[step-1][alive_targets] * dt
-                + TARGET_TRANS_NOISE * target_noise_r[alive_targets]
-                + all_forces[N_KILLER:][alive_targets] * dt
-                )
-            
-            # For killers (all have same radius)
-            new_killer_pos[alive_killers], killer_polarity[step][alive_killers] = apply_boundary(
-                new_killer_pos[alive_killers], killer_polarity[step][alive_killers],
-                BOX_X_MIN, BOX_X_MAX, BOX_Y_MIN, BOX_Y_MAX,
-                boundary_condition, KILLER_RADIUS
-                )
-            # For targets (all have same radius)
-            new_target_pos[alive_targets], target_polarity[step][alive_targets] = apply_boundary(
-                new_target_pos[alive_targets], target_polarity[step][alive_targets],
-                BOX_X_MIN, BOX_X_MAX, BOX_Y_MIN, BOX_Y_MAX,
-                boundary_condition, TARGET_RADIUS
-                )
-            
-            killer_positions = np.concatenate((killer_positions, new_killer_pos[np.newaxis]), axis=0)
-            target_positions = np.concatenate((target_positions, new_target_pos[np.newaxis]), axis=0)
-            
-            
-            ## ---Kill/Death Update---
-            #cutoff = 1.2 * (2 ** (1/6)) * SIGMA_KT
-            #contact_matrix = np.zeros((N_KILLER, N_TARGET), dtype=bool)
-            #killer_contacts_this_step = [[] for _ in range(N_KILLER)]  # <-- clear every step
-            #target_contacts_this_step = [[] for _ in range(N_TARGET)]
-            
-            
-            # --- 1. Detect contacts for ALIVE cells only ---
-            #for k_idx in range(N_KILLER):
-                #if not alive_killers[k_idx]:
-                    #continue
-                #for t_idx in range(N_TARGET):
-                    #if not alive_targets[t_idx]:
-                        #continue
-                    #r_ij = target_positions[step, t_idx] - killer_positions[step, k_idx]
-                    #d = np.linalg.norm(r_ij)
-                    #if d <= cutoff:
-                        #contact_matrix[k_idx, t_idx] = True
-            
-            contact_matrix = is_bound.copy()
-
-            #dead cells cannot be in contact
-            contact_matrix[~alive_killers, :] = False
-            contact_matrix[:, ~alive_targets] = False
-            killer_contacts_this_step = [[] for _ in range(N_KILLER)]
-            target_contacts_this_step = [[] for _ in range(N_TARGET)]
-
-
-            # --- 2. Record contact lists ONLY for living cells (for DataFrame) ---
-            for k_idx in range(N_KILLER):
-                if not alive_killers[k_idx]:
-                    continue
-                killer_contacts_this_step[k_idx] = list(np.where(contact_matrix[k_idx, :])[0])
-            for t_idx in range(N_TARGET):
-                if not alive_targets[t_idx]:
-                    continue
-                target_contacts_this_step[t_idx] = list(np.where(contact_matrix[:, t_idx])[0])
-                
-            # --- 3. Update contact history (for new contacts only) ---
-            new_contacts = np.logical_and(contact_matrix, ~prev_contact_matrix)
-            contact_counts += new_contacts.astype(int)
-            
-            # --- 4. Death Factor Update & Killing Decisions ---
-            DeathFactor_history.append(DeathFactor_history[-1].copy()) 
-            current_killer_states = killer_state_history[-1]
-            
-            time_killing_per_killer = np.zeros(N_KILLER, dtype=float)
-            time_weighted_by_target_state = np.zeros(N_KILLER, dtype=float)
-            
-            for t_idx in range(N_TARGET):
-                if not alive_targets[t_idx]:
-                    continue
-                contacting_killers = np.where(contact_matrix[:, t_idx])[0]
-                killed_this_step = False
-                killers_who_killed = []
-                for k_idx in contacting_killers:
-                    n_conj = contact_counts[k_idx, t_idx]
-                    key = (k_idx, t_idx, n_conj)
-                    if key not in kill_decision_map:
-                        prob = current_kill_probs[k_idx]
-                        kill_decision_map[key] = (np.random.rand() <= prob)
-                        if kill_prob_mode == 'decay' and new_contacts[k_idx, t_idx]:
-                            current_kill_probs[k_idx] = max(0.0, current_kill_probs[k_idx] - decay_per_contact)
-                    if kill_decision_map[key]:
-                        killed_this_step = True
-                        killers_who_killed.append(k_idx)
-                        if not RECOVERY:
-                            break 
-                idx = np.asarray(killers_who_killed, dtype=int)
-                if idx.size > 0:
-                    time_killing_per_killer[killers_who_killed] += dt
-                    time_weighted_by_target_state[killers_who_killed] += float(current_target_states[t_idx]) * dt
-                    last_killers_for_target[t_idx] = killers_who_killed[:] 
-                
-                if RECOVERY:
-                    # Standard: accumulate DeathFactor
-                    bound_to_target = np.any(is_bound[:, t_idx])
-
-                    # if killed_this_step and idx.size > 0:
-                    if idx.size > 0 and bound_to_target:
-                         kill_rate = current_target_states[t_idx] * (
-                            MIN_KILLING_RATE * idx.size
-                            + (MAX_KILLING_RATE - MIN_KILLING_RATE) * np.sum(current_killer_states[idx])
-                            )
-                            
-                    else:
-                        kill_rate = 0.0
-
-                    #DeathFactor_history[step][t_idx] += (kill_rate - RECOVERY_SPEED * DeathFactor_history[step][t_idx]) * dt
-                    
-                    if alive_targets[t_idx]: # and (DeathFactor_history[step][t_idx] >= KILL_DEATH_THRESHOLD):
-                        #alive_targets[t_idx] = False
-                        #DeathFactor_history[step][t_idx] = KILL_DEATH_THRESHOLD
-                        #target_killed_by[t_idx] = last_killers_for_target[t_idx]
-                        #is_bound[:, t_idx] = False
-                        DeathFactor_history[step][t_idx] += (
-                        kill_rate - RECOVERY_SPEED * DeathFactor_history[step][t_idx]
-                        ) * dt
-
-                    else:
-                        # Target is already dead.
-                        # If NKs are still bound, allow a small extra accumulation before detachment.
-                        if bound_to_target:
-                            DeathFactor_history[step][t_idx] += kill_rate * dt
-                            
-                    if alive_targets[t_idx] and (DeathFactor_history[step][t_idx] >= KILL_DEATH_THRESHOLD):
-                        alive_targets[t_idx] = False
-                        # DeathFactor_history[step][t_idx] = KILL_DEATH_THRESHOLD
-                        target_killed_by[t_idx] = last_killers_for_target[t_idx]
-                        # is_bound[:, t_idx] = False
-
-                    if (not alive_targets[t_idx]) and np.any(is_bound[:, t_idx]):
-                        if DeathFactor_history[step][t_idx] >= KILL_DEATH_THRESHOLD*1.1:
-                            DeathFactor_history[step][t_idx] = KILL_DEATH_THRESHOLD * 1.1
-                            is_bound[:, t_idx] = False
-                    # if DeathFactor_history[step][t_idx] >= KILL_DEATH_THRESHOLD:
-                    #     alive_targets[t_idx] = False
-                    #     DeathFactor_history[step][t_idx] = KILL_DEATH_THRESHOLD
-                    #     target_killed_by[t_idx] = killers_who_killed if killers_who_killed else list(contacting_killers)
-                else:
-                    # No recovery: instant death
-                    # if killed_this_step:
-                    #     alive_targets[t_idx] = False
-                    #     DeathFactor_history[step][t_idx] = KILL_DEATH_THRESHOLD
-                    #     target_killed_by[t_idx] = killers_who_killed if killers_who_killed else list(contacting_killers)  
-                    if killed_this_step:
-                        DeathFactor_history[step][t_idx] = KILL_DEATH_THRESHOLD
-                    if alive_targets[t_idx] and (DeathFactor_history[step][t_idx] >= KILL_DEATH_THRESHOLD):
-                        alive_targets[t_idx] = False
-                        DeathFactor_history[step][t_idx] = KILL_DEATH_THRESHOLD
-                        target_killed_by[t_idx] = last_killers_for_target[t_idx]
-                        is_bound[:, t_idx] = False      
-            
-            per_killer_decay = (
-                MIN_STATE_DECAY_dt * time_killing_per_killer
-                + (MAX_STATE_DECAY_dt - MIN_STATE_DECAY_dt) * time_weighted_by_target_state
-                ) 
-            next_killer_states = current_killer_states - per_killer_decay * current_killer_states
-            next_killer_states = np.clip(next_killer_states, 0.0, 1.0)
-            killer_state_history.append(next_killer_states)
-            
-            # --- 5. Zero out contact_matrix/counts for dead targets (ensures NO ghost contacts) ---
-            for t_idx in range(N_TARGET):
-                if not alive_targets[t_idx]:
-                    contact_matrix[:, t_idx] = False
-                    contact_counts[:, t_idx] = 0
-                    
-            # --- 6. Prepare for next step ---
-            prev_contact_matrix = contact_matrix.copy()
-            killingProbability_history.append(current_kill_probs.copy())
-            
-        # --- Collect step records for DataFrame ---
-        step_records = []
-        for i in range(N_KILLER):
-            step_records.append({
-                'step': step,
-                'time': processed_time,
-                'cell_type': 'killer',
-                'cell_id': i,
-                'x': killer_positions[step, i, 0],
-                'y': killer_positions[step, i, 1],
-                'mu_x': killer_polarity[step, i, 0],
-                'mu_y': killer_polarity[step, i, 1],
-                'cell_state':  float(current_killer_states[i]),  
-                'alive_status': True,
-                'killing_P': killingProbability_history[step][i] if step < len(killingProbability_history) else kill_init[i],
-                'contacts': killer_contacts_this_step[i]
-            })
-        for j in range(N_TARGET):
-            step_records.append({
-                'step': step,
-                'time': processed_time,
-                'cell_type': 'target',
-                'cell_id': j,
-                'x': target_positions[step, j, 0],
-                'y': target_positions[step, j, 1],
-                'mu_x': target_polarity[step, j, 0],
-                'mu_y': target_polarity[step, j, 1],
-                'alive_status': bool(alive_targets[j]),
-                'Death_Factor': DeathFactor_history[step][j],
-                'contacts': target_contacts_this_step[j],
-                'killed_by': target_killed_by[j] if len(target_killed_by[j]) > 0 else None
-            })
-        cell_history_df = pd.concat([cell_history_df, pd.DataFrame(step_records)], ignore_index=True)
-
-        # --- Update time and step ---
-        step += 1
-        if step == 0:
-            processed_time += DT0
-        else:
-            processed_time += dt
-        pbar.n = min(processed_time, SIM_DURATION)
-        pbar.update(0)
-    pbar.close()
-    #sim_settings = {
-        #'KILLER_RADIUS': KILLER_RADIUS,
-        #'TARGET_RADIUS': TARGET_RADIUS,
-        #'BOX_X_MIN': BOX_X_MIN,
-        #'BOX_X_MAX': BOX_X_MAX,
-        #'BOX_Y_MIN': BOX_Y_MIN,
-        #'BOX_Y_MAX': BOX_Y_MAX,
-        #'boundary_condition': boundary_condition,
-        # Add more settings if you want!
-    #}
-    sim_settings = {
-        'KILLER_RADIUS': KILLER_RADIUS,
-        'TARGET_RADIUS': TARGET_RADIUS,
-        'BOX_X_MIN': BOX_X_MIN,
-        'BOX_X_MAX': BOX_X_MAX,
-        'BOX_Y_MIN': BOX_Y_MIN,
-        'BOX_Y_MAX': BOX_Y_MAX,
-        'boundary_condition': boundary_condition,
-        'KREP_KK': KREP_KK,
-        'KREP_TT': KREP_TT,
-        'KREP_KT': KREP_KT,
-        'F_A_KK': F_A_KK,
-        'F_A_TT': F_A_TT,
-        'F_A_KT': F_A_KT,
-        }
-    return cell_history_df, killer_positions, target_positions, killingProbability_history, DeathFactor_history, sim_settings
-
-
-# KTSimulator()
-# print("fuck")
-
+    result = engine.run(
+        initial_killer_positions=killer_positions, initial_target_positions=target_positions,
+        initial_killer_state=killer_state, initial_target_state=target_state,
+        initial_kill_probability=probabilities, initial_death_factor=damage,
+    )
+    history = result.snapshots.rename(columns={
+        "polarity_x": "mu_x", "polarity_y": "mu_y", "state": "cell_state",
+        "alive": "alive_status", "death_factor": "Death_Factor",
+        "synapses": "contacts", "kill_probability": "killing_P",
+    }).copy()
+    history["killed_by"] = history.pop("primary_killer").map(
+        lambda killer: [int(killer)] if killer is not None and np.isfinite(killer) else None
+    )
+    killers = history[history.cell_type == "killer"]
+    targets = history[history.cell_type == "target"]
+    killer_trajectory = killers[["x", "y"]].to_numpy().reshape(-1, N_KILLER, 2)
+    target_trajectory = targets[["x", "y"]].to_numpy().reshape(-1, N_TARGET, 2)
+    probability_history = list(killers.killing_P.to_numpy().reshape(-1, N_KILLER))
+    damage_history = list(targets.Death_Factor.to_numpy().reshape(-1, N_TARGET))
+    settings = {name: arguments[name] for name in (
+        "KILLER_RADIUS", "TARGET_RADIUS", "BOX_X_MIN", "BOX_X_MAX", "BOX_Y_MIN", "BOX_Y_MAX",
+        "boundary_condition", "KREP_KK", "KREP_TT", "KREP_KT", "F_A_KK", "F_A_TT", "F_A_KT",
+    )}
+    return history, killer_trajectory, target_trajectory, probability_history, damage_history, settings

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .config import DomainConfig, SimulationConfig
+from .config import DomainConfig, MechanicsConfig, SimulationConfig
 from .results import SimulationResult
 
 
@@ -54,7 +54,15 @@ def _sample_clipped_normal(
     *,
     lower: float,
     upper: float,
+    values: np.ndarray | None = None,
 ) -> np.ndarray:
+    if values is not None:
+        values = np.asarray(values, dtype=float)
+        if values.shape != (size,) or not np.all(np.isfinite(values)):
+            raise ValueError(f"initial values must be a finite array of shape ({size},)")
+        if np.any((values < lower) | (values > upper)):
+            raise ValueError(f"initial values must lie in [{lower}, {upper}]")
+        return values.copy()
     if sd == 0:
         return np.full(size, np.clip(mean, lower, upper), dtype=float)
     return np.clip(rng.normal(mean, sd, size=size), lower, upper)
@@ -144,11 +152,31 @@ def _apply_boundary(
             polarities[index, 1] *= -1
 
 
+def _bond_transitions(bound, distance, eligible, mechanics: MechanicsConfig, contact_distance, dt, rng):
+    """Update bonds and yield transitions before the caller samples productivity."""
+    p_bind = 1.0 - np.exp(-mechanics.binding_rate * dt)
+    p_unbind = 1.0 - np.exp(-mechanics.unbinding_rate * dt)
+    capture_cutoff = mechanics.capture_radius_factor * contact_distance
+    for killer_id in range(bound.shape[0]):
+        for target_id in range(bound.shape[1]):
+            if bound[killer_id, target_id]:
+                separation = distance[killer_id, target_id] > capture_cutoff
+                stochastic = rng.random() < p_unbind
+                if separation or stochastic:
+                    bound[killer_id, target_id] = False
+                    yield killer_id, target_id, "separation" if separation else "stochastic"
+            elif eligible[killer_id, target_id] and rng.random() < p_bind:
+                bound[killer_id, target_id] = True
+                yield killer_id, target_id, None
+
+
 def _forces(
     positions: np.ndarray,
     alive: np.ndarray,
     bound: np.ndarray,
     config: SimulationConfig,
+    *,
+    pairwise: bool = False,
 ) -> np.ndarray:
     """Return net pair forces, including periodic minimum-image geometry."""
 
@@ -160,7 +188,7 @@ def _forces(
             np.full(config.n_targets, config.target_radius),
         ]
     )
-    net = np.zeros_like(positions)
+    net = np.zeros((n_total, n_total, 2)) if pairwise else np.zeros_like(positions)
 
     for first in range(n_total - 1):
         if not alive[first]:
@@ -202,8 +230,12 @@ def _forces(
                 < config.mechanics.capture_radius_factor * contact_distance
             ):
                 pair_force -= config.mechanics.adhesion_kt * unit
-            net[first] += pair_force
-            net[second] -= pair_force
+            if pairwise:
+                net[first, second] = pair_force
+                net[second, first] = -pair_force
+            else:
+                net[first] += pair_force
+                net[second] -= pair_force
     return net
 
 
@@ -218,6 +250,9 @@ def _record_snapshots(
     target_state: np.ndarray,
     target_damage: np.ndarray,
     target_alive: np.ndarray,
+    bound: np.ndarray,
+    kill_probability: np.ndarray,
+    primary_killer: np.ndarray,
     config: SimulationConfig,
 ) -> None:
     for killer_id in range(config.n_killers):
@@ -234,6 +269,9 @@ def _record_snapshots(
                 "alive": True,
                 "state": killer_state[killer_id],
                 "death_factor": np.nan,
+                "synapses": np.flatnonzero(bound[killer_id]).tolist(),
+                "kill_probability": kill_probability[killer_id],
+                "primary_killer": None,
             }
         )
     for target_id in range(config.n_targets):
@@ -251,6 +289,11 @@ def _record_snapshots(
                 "alive": bool(target_alive[target_id]),
                 "state": target_state[target_id],
                 "death_factor": target_damage[target_id],
+                "synapses": np.flatnonzero(bound[:, target_id]).tolist(),
+                "kill_probability": np.nan,
+                "primary_killer": (
+                    int(primary_killer[target_id]) if primary_killer[target_id] >= 0 else None
+                ),
             }
         )
 
@@ -293,7 +336,16 @@ class Simulation:
         *,
         initial_killer_positions: np.ndarray | None = None,
         initial_target_positions: np.ndarray | None = None,
+        initial_killer_state: np.ndarray | None = None,
+        initial_target_state: np.ndarray | None = None,
+        initial_death_factor: np.ndarray | None = None,
+        initial_kill_probability: np.ndarray | None = None,
     ) -> SimulationResult:
+        """Run with configured sampling or explicit per-cell initial arrays.
+
+        States and probabilities must lie in [0, 1], and death factors between
+        zero and the death threshold. Supplied arrays are copied, not mutated.
+        """
         config = self.config
         rng = np.random.default_rng(config.seed)
         n_k, n_t = config.n_killers, config.n_targets
@@ -309,6 +361,8 @@ class Simulation:
             if killer_positions.shape != (n_k, 2) or target_positions.shape != (n_t, 2):
                 raise ValueError("initial position arrays have incompatible shapes")
             positions = np.vstack([killer_positions, target_positions]).copy()
+            if not np.all(np.isfinite(positions)):
+                raise ValueError("initial positions must be finite")
 
         polarities = np.zeros((n_total, 2), dtype=float)
         killer_state = _sample_clipped_normal(
@@ -316,6 +370,7 @@ class Simulation:
             config.cytotoxicity.initial_killer_state,
             config.cytotoxicity.killer_state_sd,
             n_k,
+            values=initial_killer_state,
             lower=0.0,
             upper=1.0,
         )
@@ -324,6 +379,7 @@ class Simulation:
             config.cytotoxicity.initial_target_state,
             config.cytotoxicity.target_state_sd,
             n_t,
+            values=initial_target_state,
             lower=0.0,
             upper=1.0,
         )
@@ -332,6 +388,7 @@ class Simulation:
             config.cytotoxicity.initial_death_factor,
             config.cytotoxicity.initial_death_factor_sd,
             n_t,
+            values=initial_death_factor,
             lower=0.0,
             upper=config.cytotoxicity.death_threshold,
         )
@@ -342,6 +399,7 @@ class Simulation:
             config.cytotoxicity.kill_probability,
             config.cytotoxicity.kill_probability_sd,
             n_k,
+            values=initial_kill_probability,
             lower=0.0,
             upper=1.0,
         )
@@ -349,6 +407,7 @@ class Simulation:
         bound = np.zeros((n_k, n_t), dtype=bool)
         productive = np.zeros((n_k, n_t), dtype=bool)
         damage_contribution = np.zeros((n_k, n_t), dtype=float)
+        primary_killer = np.full(n_t, -1, dtype=int)
         events: list[dict[str, float | int | str | None]] = []
         snapshot_rows: list[dict[str, float | int | str | bool]] = []
 
@@ -380,6 +439,9 @@ class Simulation:
             target_state=target_state,
             target_damage=target_damage,
             target_alive=target_alive,
+            bound=bound,
+            kill_probability=kill_probability,
+            primary_killer=primary_killer,
             config=config,
         )
 
@@ -451,45 +513,26 @@ class Simulation:
             next_time = time + dt
             next_step = step + 1
 
-            p_bind = 1.0 - np.exp(-config.mechanics.binding_rate * dt)
-            p_unbind = 1.0 - np.exp(-config.mechanics.unbinding_rate * dt)
-
-            for killer_id in range(n_k):
-                for target_id in range(n_t):
-                    if bound[killer_id, target_id]:
-                        separation = distance[killer_id, target_id] > capture_cutoff
-                        stochastic = rng.random() < p_unbind
-                        if separation or stochastic:
-                            bound[killer_id, target_id] = False
-                            productive[killer_id, target_id] = False
-                            _event(
-                                events,
-                                time=time,
-                                step=step,
-                                name="synapse_ended",
-                                killer_id=killer_id,
-                                target_id=target_id,
-                                reason="separation" if separation else "stochastic",
-                            )
-                    elif proximity_now[killer_id, target_id] and rng.random() < p_bind:
-                        bound[killer_id, target_id] = True
-                        productive[killer_id, target_id] = (
-                            rng.random() < kill_probability[killer_id]
-                        )
-                        _event(
-                            events,
-                            time=time,
-                            step=step,
-                            name="synapse_formed",
-                            killer_id=killer_id,
-                            target_id=target_id,
-                            value=float(productive[killer_id, target_id]),
-                        )
-                        kill_probability[killer_id] = max(
-                            0.0,
-                            kill_probability[killer_id]
-                            - config.cytotoxicity.kill_probability_decay_per_synapse,
-                        )
+            for killer_id, target_id, reason in _bond_transitions(
+                bound, distance, proximity_now, config.mechanics, contact_distance, dt, rng
+            ):
+                if reason is not None:
+                    productive[killer_id, target_id] = False
+                    _event(
+                        events, time=time, step=step, name="synapse_ended",
+                        killer_id=killer_id, target_id=target_id, reason=reason,
+                    )
+                else:
+                    productive[killer_id, target_id] = rng.random() < kill_probability[killer_id]
+                    _event(
+                        events, time=time, step=step, name="synapse_formed",
+                        killer_id=killer_id, target_id=target_id,
+                        value=float(productive[killer_id, target_id]),
+                    )
+                    kill_probability[killer_id] = max(
+                        0.0, kill_probability[killer_id]
+                        - config.cytotoxicity.kill_probability_decay_per_synapse,
+                    )
 
             forces = _forces(positions, alive, bound, config)
             old_polarities = polarities.copy()
@@ -539,6 +582,8 @@ class Simulation:
                     config.cytotoxicity.recovery_rate * target_damage[target_id] * dt
                 )
                 target_damage[target_id] = max(0.0, target_damage[target_id])
+                if config.cytotoxicity.instant_kill and active_killers.size:
+                    target_damage[target_id] = config.cytotoxicity.death_threshold
 
                 if target_damage[target_id] >= config.cytotoxicity.death_threshold:
                     target_damage[target_id] = config.cytotoxicity.death_threshold
@@ -550,6 +595,10 @@ class Simulation:
                         if contributors.size
                         else None
                     )
+                    if config.cytotoxicity.instant_kill and active_killers.size:
+                        primary = int(active_killers[0])
+                    if primary is not None:
+                        primary_killer[target_id] = primary
                     _event(
                         events,
                         time=next_time,
@@ -625,6 +674,9 @@ class Simulation:
                     target_state=target_state,
                     target_damage=target_damage,
                     target_alive=target_alive,
+                    bound=bound,
+                    kill_probability=kill_probability,
+                    primary_killer=primary_killer,
                     config=config,
                 )
 
