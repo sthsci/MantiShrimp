@@ -222,10 +222,8 @@ and [notebook-function migration map](https://github.com/sthsci/MantiShrimp/blob
 MantiShrimp was developed by Elephes Sung, Szonja Skenderovic, Yixuan Li, and
 Ruben Perez-Carrasco at the Department of Life Sciences, Imperial College
 London. Elephes Sung and Szonja Skenderovic contributed equally. See
-[`AUTHORS.md`](https://github.com/sthsci/MantiShrimp/blob/main/AUTHORS.md) for
-author details and
 [`CITATION.cff`](https://github.com/sthsci/MantiShrimp/blob/main/CITATION.cff)
-for machine-readable citation metadata.
+for author details and machine-readable citation metadata.
 
 ## Development
 
