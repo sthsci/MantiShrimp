@@ -16,6 +16,11 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Shared force calculation now uses batched NumPy operations instead of Python
+  loops over cell pairs. Both package and legacy script calls use this routine,
+  including the assistant helper's pairwise output. The force rules, adaptive
+  timestep, random draws and recording frequency are unchanged. Floating-point
+  rounding can differ, and temporary pair arrays require quadratic memory.
 - Legacy simulations now use package integration, periodic geometry and primary
   kill attribution. Their `contacts` lists retain dead-target bonds until release,
   and `killed_by` records one primary killer per death.
@@ -30,6 +35,8 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   still uses cumulative damage.
 - Regression checks comparing script and package trajectories under identical
   inputs, plus legacy post-death binding, exhaustion, initialisation and imports.
+- Scalar-reference comparisons for vectorized forces and seeded dynamics,
+  including both boundary conditions, both output formats and retained dead bonds.
 
 ## [0.3.0] - 2026-10-14
 

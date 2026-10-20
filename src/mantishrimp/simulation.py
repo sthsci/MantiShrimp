@@ -178,65 +178,43 @@ def _forces(
     *,
     pairwise: bool = False,
 ) -> np.ndarray:
-    """Return net pair forces, including periodic minimum-image geometry."""
+    """Return net or pairwise forces using batched minimum-image geometry."""
 
     n_k = config.n_killers
     n_total = positions.shape[0]
     radii = np.concatenate(
-        [
-            np.full(n_k, config.killer_radius),
-            np.full(config.n_targets, config.target_radius),
-        ]
+        [np.full(n_k, config.killer_radius),
+         np.full(config.n_targets, config.target_radius)]
     )
-    net = np.zeros((n_total, n_total, 2)) if pairwise else np.zeros_like(positions)
-
-    for first in range(n_total - 1):
-        if not alive[first]:
-            continue
-        for second in range(first + 1, n_total):
-            if not alive[second] and not (
-                first < n_k <= second and bound[first, second - n_k]
-            ):
-                continue
-            displacement = _minimum_image(
-                positions[first] - positions[second], config.domain
-            )
-            distance = float(np.linalg.norm(displacement))
-            if distance == 0:
-                continue
-            unit = displacement / distance
-            contact_distance = radii[first] + radii[second]
-
-            first_is_killer = first < n_k
-            second_is_killer = second < n_k
-            if first_is_killer and second_is_killer:
-                stiffness = config.mechanics.repulsion_kk
-                is_bound = False
-            elif not first_is_killer and not second_is_killer:
-                stiffness = config.mechanics.repulsion_tt
-                is_bound = False
-            else:
-                stiffness = config.mechanics.repulsion_kt
-                killer_index = first if first_is_killer else second
-                target_global = second if first_is_killer else first
-                target_index = target_global - n_k
-                is_bound = bool(bound[killer_index, target_index])
-
-            pair_force = stiffness * max(contact_distance - distance, 0.0) * unit
-            # Bound adhesion adds to repulsion, including during overlap.
-            if (
-                is_bound
-                and distance
-                < config.mechanics.capture_radius_factor * contact_distance
-            ):
-                pair_force -= config.mechanics.adhesion_kt * unit
-            if pairwise:
-                net[first, second] = pair_force
-                net[second, first] = -pair_force
-            else:
-                net[first] += pair_force
-                net[second] -= pair_force
-    return net
+    # Batch unordered pairs to avoid thousands of tiny Python/NumPy calls.
+    first, second = np.triu_indices(n_total, k=1)
+    cross = (first < n_k) & (second >= n_k)
+    is_bound = np.zeros(first.size, dtype=bool)
+    is_bound[cross] = bound[first[cross], second[cross] - n_k]
+    active = alive[first] & (alive[second] | is_bound)
+    displacement = _minimum_image(positions[first] - positions[second], config.domain)
+    distance = np.linalg.norm(displacement, axis=1)
+    unit = np.divide(
+        displacement, distance[:, None], out=np.zeros_like(displacement),
+        where=distance[:, None] != 0,
+    )
+    contact_distance = radii[first] + radii[second]
+    stiffness = np.where(
+        cross, config.mechanics.repulsion_kt,
+        np.where(first < n_k, config.mechanics.repulsion_kk,
+                 config.mechanics.repulsion_tt),
+    )
+    pair_force = (stiffness * np.maximum(contact_distance - distance, 0.0))[:, None] * unit
+    adhesion = is_bound & (
+        distance < config.mechanics.capture_radius_factor * contact_distance
+    )
+    pair_force[adhesion] -= config.mechanics.adhesion_kt * unit[adhesion]
+    pair_force[~active] = 0.0
+    # shortcut: Dense pairs use O(N^2) memory; use neighbour lists if memory becomes limiting.
+    pairs = np.zeros((n_total, n_total, 2))
+    pairs[first, second] = pair_force
+    pairs[second, first] = -pair_force
+    return pairs if pairwise else pairs.sum(axis=1)
 
 
 def _record_snapshots(

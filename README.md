@@ -71,6 +71,11 @@ inference.
 
 ### Use an existing simulation script or notebook
 
+There is one simulation engine, in `src/mantishrimp/simulation.py`.
+`script/simulator/simulator.py` translates the legacy arguments and outputs:
+`KTSimulator(...)` calls `Simulation.run(...)`, which calls the shared `_forces(...)`.
+The assistant force helper also imports this same NumPy force calculation.
+
 Keep using `from simulator import KTSimulator` when your notebook already adds
 `script/simulator` to its Python path. From the repository root, you can also use:
 

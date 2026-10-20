@@ -4,13 +4,10 @@ import matplotlib.animation as animation
 from matplotlib.patches import Rectangle
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from matplotlib.patches import Circle, Patch
+from matplotlib.patches import Circle
 from matplotlib.lines import Line2D
 from IPython.display import HTML
 import numpy as np
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from matplotlib.colors import ListedColormap
-from matplotlib.colorbar import ColorbarBase
 
 def draw_box(ax, box, **kwargs):
     """Draw rectangle boundaries (dashed box) on ax."""
@@ -58,6 +55,9 @@ def animate_KT(
     live_target_colour="green",
     dead_target_colour="salmon",
     traj_steps=10,
+    traj_linewidth=0.7,
+    cir_linewidth= 2,
+    traj_alpha=0.7,
     figsize=(5, 5),
     box=(-600, 600, -600, 600),
     interval=10,
@@ -70,7 +70,18 @@ def animate_KT(
     Animate Killer-Target cell simulation, showing box and periodic/reflecting trajectories.
     box: simulation box [xmin, xmax, ymin, ymax]
     ax_box: axis/plot box [xmin, xmax, ymin, ymax] (optional, can be bigger than sim box)
+    traj_linewidth: trajectory width in points (non-negative)
+    traj_alpha: trajectory opacity from 0 (transparent) to 1 (opaque)
+    dead_target_radius: displayed dead-cell radius; does not change simulation mechanics
+    add_swatch_legend: show a circle legend below the plot (legacy argument name)
     """
+    if not np.isfinite(traj_linewidth) or traj_linewidth < 0:
+        raise ValueError("traj_linewidth must be finite and non-negative")
+    if not np.isfinite(traj_alpha) or not 0 <= traj_alpha <= 1:
+        raise ValueError("traj_alpha must be finite and between 0 and 1")
+    radii = np.asarray([killer_radius, target_radius, dead_target_radius], dtype=float)
+    if not np.isfinite(radii).all() or (radii < 0).any() or radii.max() == 0:
+        raise ValueError("cell radii must be finite and non-negative, with at least one positive radius")
     if ax_box is None:
         ax_box = box
 
@@ -83,13 +94,7 @@ def animate_KT(
     killer_traj = np.array(killer_positions)
     target_traj = np.array(target_positions)
 
-    legend_elements = [
-        Patch(facecolor=killer_colour, edgecolor='black', label='Killer'),
-        Patch(facecolor=live_target_colour, edgecolor='black', label='Target (Alive)'),
-        Patch(facecolor=dead_target_colour, edgecolor='black', label='Target (Dead)')
-    ]
-
-    fig, ax = plt.subplots(figsize=figsize, dpi = fig_dpi)
+    fig, ax = plt.subplots(figsize=figsize, dpi=fig_dpi, layout="constrained")
     ax.set_xlim(ax_box[0], ax_box[1])
     ax.set_ylim(ax_box[2], ax_box[3])
     ax.set_aspect('equal')
@@ -97,49 +102,41 @@ def animate_KT(
     # --- Draw dashed simulation box boundary ---
     draw_box(ax, box, color='gray', linestyle='dashed', linewidth=1)
     
-    # ---- Swatch bar legend ----
+    # Circle legend: colours, outlines and relative radii match the cells.
     if add_swatch_legend:
-        # Use default legend_labels if not given
         if legend_labels is None:
-            legend_labels = [
-                'Killer',
-                'Target (Alive)',
-                'Target (Dead)'
-            ]
-        # Colors for the legend (order must match the labels)
-        colors = [killer_colour, live_target_colour, dead_target_colour]
-        cmap = ListedColormap(colors)
-        bounds = [0, 1, 2, 3]  # n_colors+1
-        norm = plt.Normalize(0, 3)
-        
-        # Use axes_grid1 to add colorbar axis
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        cb = ColorbarBase(
-            cax, cmap=cmap, norm=norm, boundaries=bounds, ticks=[0.5, 1.5, 2.5], spacing='proportional', orientation='vertical'
+            legend_labels = ['killer', 'alive target', 'dead target']
+        if len(legend_labels) != 3:
+            raise ValueError("legend_labels must contain killer, live-target and dead-target labels")
+        handles = [
+            Line2D([], [], marker='o', linestyle='none',
+                   markersize=12 * radius / radii.max(),
+                   markerfacecolor=colour, markeredgecolor='black',
+                   markeredgewidth=cir_linewidth, alpha=1)
+            for radius, colour in zip(radii, (killer_colour, live_target_colour, dead_target_colour))
+        ]
+        fig.legend(
+            handles, legend_labels, loc='outside lower center', ncol=3,
+            frameon=False, handlelength=1, handletextpad=0.5, columnspacing=1,
         )
-        cb.ax.set_yticklabels(legend_labels)
-        cb.set_label("Cell Type")
-        cb.ax.tick_params(size=0)
 
     # --- Cell circles ---
-    killer_circles = [Circle((0,0), radius=killer_radius, color=killer_colour, ec='black', lw=1, alpha=1) for _ in range(N_KILLER)]
-    target_circles = [Circle((0,0), radius=target_radius, color=live_target_colour, ec='black', lw=1, alpha=1) for _ in range(N_TARGET)]
-    dead_target_circles = [Circle((0,0), radius=dead_target_radius, color=dead_target_colour, ec='black', lw=1, alpha=1, visible=False) for _ in range(N_TARGET)]
+    killer_circles = [Circle((0,0), radius=killer_radius, color=killer_colour, ec='black', lw=cir_linewidth, alpha=1) for _ in range(N_KILLER)]
+    target_circles = [Circle((0,0), radius=target_radius, color=live_target_colour, ec='black', lw=cir_linewidth, alpha=1) for _ in range(N_TARGET)]
+    dead_target_circles = [Circle((0,0), radius=dead_target_radius, color=dead_target_colour, ec='black', lw=cir_linewidth, alpha=1, visible=False) for _ in range(N_TARGET)]
     for c in killer_circles + target_circles + dead_target_circles:
+        c.set_zorder(3)  # Keep cell fills above trajectory lines (default zorder 2).
         ax.add_patch(c)
 
     # --- Trajectory lines (only last N steps) ---
     killer_lines = [ [] for _ in range(N_KILLER) ]
     target_lines = [ [] for _ in range(N_TARGET) ]
     for i in range(N_KILLER):
-        l, = ax.plot([], [], color=killer_colour, lw=0.7, alpha=0.7)
+        l, = ax.plot([], [], color=killer_colour, lw=traj_linewidth, alpha=traj_alpha)
         killer_lines[i].append(l)
     for j in range(N_TARGET):
-        l, = ax.plot([], [], color=live_target_colour, lw=0.7, alpha=0.7)
+        l, = ax.plot([], [], color=live_target_colour, lw=traj_linewidth, alpha=traj_alpha)
         target_lines[j].append(l)
-
-    # ax.legend(handles=legend_elements, loc="upper right")
 
     def animate(step):
         traj_start = max(0, step - traj_steps + 1)
@@ -155,7 +152,7 @@ def animate_KT(
             xy = killer_traj[traj_start:step+1, i, :]
             if boundary_condition == "periodic":
                 for seg in periodic_traj_segment(xy, box):
-                    line, = ax.plot(seg[:, 0], seg[:, 1], color=killer_colour, lw=0.7, alpha=0.7)
+                    line, = ax.plot(seg[:, 0], seg[:, 1], color=killer_colour, lw=traj_linewidth, alpha=traj_alpha)
                     killer_lines[i].append(line)
                 killer_lines[i][0].set_data([], [])
             else:
@@ -164,7 +161,7 @@ def animate_KT(
             xy = target_traj[traj_start:step+1, j, :]
             if boundary_condition == "periodic":
                 for seg in periodic_traj_segment(xy, box):
-                    line, = ax.plot(seg[:, 0], seg[:, 1], color=live_target_colour, lw=0.7, alpha=0.7)
+                    line, = ax.plot(seg[:, 0], seg[:, 1], color=live_target_colour, lw=traj_linewidth, alpha=traj_alpha)
                     target_lines[j].append(line)
                 target_lines[j][0].set_data([], [])
             else:
@@ -196,7 +193,11 @@ def animate_KT(
         try:
             from matplotlib.animation import PillowWriter
             fps = int(gif_fps) if gif_fps is not None else max(1, int(round(1000 / interval)))
-            ani.save(save_gif_path, writer=PillowWriter(fps=fps))
+            ani.save(
+                save_gif_path,
+                writer=PillowWriter(fps=fps),
+                # savefig_kwargs={"transparent": True, "facecolor": "none"},
+            )
             print(f"Animation saved as GIF: {save_gif_path}")
         except Exception as e:
             print(f"Failed to save GIF: {e}")
