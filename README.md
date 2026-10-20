@@ -21,15 +21,13 @@ the `KTSimulator` arguments and six returned outputs used by older notebooks.
 
 ## ABM demonstration
 
-![Animated killer-target ABM simulation](https://raw.githubusercontent.com/sthsci/MantiShrimp/main/figures/abm_demo.gif)
+![Animated killer-target ABM simulation](vis_test.gif)
 
 Blue agents are killer immune cells, green agents are living tumour targets,
 and salmon agents are dead targets. Cells move continuously in the off-lattice
 domain; killer-target proximity can lead to stochastic synapse formation,
 damage accumulation, and target death. The animation is a visual illustration
-of one run rather than a calibrated biological prediction. A
-[full-resolution version](https://github.com/sthsci/MantiShrimp/blob/main/figures/vis_test.gif)
-is also available.
+of one run rather than a calibrated biological prediction.
 
 ## Install
 
@@ -109,9 +107,7 @@ continuous rate heterogeneity, or both?** It operates on one integer count per
 killer cell. That count can be either the number of contact episodes or the
 number of attributed kills.
 
-![Synthetic event-count and Bayesian inference workflow](https://raw.githubusercontent.com/sthsci/MantiShrimp/main/figures/syn_vali.png)
-
-The workflow above has three steps:
+The workflow has three steps:
 
 1. Each killer cell `i` has a latent event rate `λᵢ`.
 2. Over exposure time `Tᵢ`, its observed count is modelled as
@@ -129,13 +125,11 @@ exposures can be supplied directly.
 
 ### Four candidate population models
 
-![Four Bayesian event-rate population models](https://raw.githubusercontent.com/sthsci/MantiShrimp/main/figures/models.png)
-
-The figure expresses the four models as restrictions of the same latent-rate
-distribution. The grey/blue mass at zero is `φ₀`; the positive-rate
+The four models are restrictions of the same latent-rate
+distribution. The mass at zero is `φ₀`; the positive-rate
 distribution has mean `μλ` and standard deviation `σλ`.
 
-| Package name | Figure | Parameter restriction | Count distribution | Interpretation |
+| Package name | Notation | Parameter restriction | Count distribution | Interpretation |
 | --- | --- | --- | --- | --- |
 | `homo` | homo | `σλ = 0; φ₀ = 0` | Poisson | one shared rate |
 | `Z2P` | ZI | `σλ = 0; φ₀ > 0` | zero-inflated Poisson | shared active rate plus inactive cells |
@@ -146,11 +140,6 @@ For the Gamma models, integrating the cell-specific `λᵢ` values out of
 the Poisson likelihood gives the negative-binomial count distribution. This
 lets the model estimate continuous cell-to-cell variation without sampling a
 separate rate for every killer.
-
-The original vector figures are available as
-[the inference workflow PDF](https://github.com/sthsci/MantiShrimp/blob/main/figures/syn_vali.pdf)
-and
-[the four-model PDF](https://github.com/sthsci/MantiShrimp/blob/main/figures/models.pdf).
 
 ### Fit contacts and kills separately
 
