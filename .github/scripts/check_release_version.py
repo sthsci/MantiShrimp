@@ -27,10 +27,6 @@ declared_versions = {
         ROOT / "src/mantishrimp/__init__.py",
         r'^__version__\s*=\s*["\']([^"\']+)["\']',
     ),
-    "CITATION.cff": match_version(
-        ROOT / "CITATION.cff",
-        r"^version:\s*[\"']?([^\s\"']+)",
-    ),
 }
 
 if len(set(declared_versions.values())) != 1:

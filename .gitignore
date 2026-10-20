@@ -17,3 +17,5 @@ results/
 /AUTHORS.md
 /demo_new.ipynb
 /.gitattributes
+/CITATION.cff
+/MANIFEST.in

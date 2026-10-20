@@ -1,5 +1,0 @@
-include CHANGELOG.md
-include CITATION.cff
-include LICENSE
-include README.md
-recursive-include docs *.md

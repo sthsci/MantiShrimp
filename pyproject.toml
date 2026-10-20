@@ -68,7 +68,6 @@ Repository = "https://github.com/sthsci/MantiShrimp"
 Documentation = "https://github.com/sthsci/MantiShrimp/blob/main/docs/model.md"
 Issues = "https://github.com/sthsci/MantiShrimp/issues"
 Changelog = "https://github.com/sthsci/MantiShrimp/blob/main/CHANGELOG.md"
-Citation = "https://github.com/sthsci/MantiShrimp/blob/main/CITATION.cff"
 
 [tool.setuptools.packages.find]
 where = ["src"]

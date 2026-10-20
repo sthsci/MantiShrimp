@@ -217,13 +217,11 @@ simulation-based inference layer.
 See the [scientific model contract](https://github.com/sthsci/MantiShrimp/blob/main/docs/model.md)
 and [notebook-function migration map](https://github.com/sthsci/MantiShrimp/blob/main/docs/notebook-migration.md).
 
-## Authors and citation
+## Authors
 
 MantiShrimp was developed by Elephes Sung, Szonja Skenderovic, Yixuan Li, and
 Ruben Perez-Carrasco at the Department of Life Sciences, Imperial College
-London. Elephes Sung and Szonja Skenderovic contributed equally. See
-[`CITATION.cff`](https://github.com/sthsci/MantiShrimp/blob/main/CITATION.cff)
-for author details and machine-readable citation metadata.
+London. Elephes Sung and Szonja Skenderovic contributed equally.
 
 ## Development
 

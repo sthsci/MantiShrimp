@@ -26,7 +26,7 @@ work. For this mechanics change:
 git switch -c codex/additive-bound-adhesion
 git add src/mantishrimp/simulation.py script/simulator/assistant_function.py \
   docs/model.md docs/releasing.md CHANGELOG.md \
-  pyproject.toml src/mantishrimp/__init__.py CITATION.cff
+  pyproject.toml src/mantishrimp/__init__.py
 git add figures/abm_schematic_drafts/plot_force_and_binding.py \
   figures/abm_schematic_drafts/force_and_binding_rules_additive.png \
   figures/abm_schematic_drafts/force_and_binding_rules_additive.svg \
@@ -64,8 +64,7 @@ upload.
 
 ## Release checklist
 
-1. Update the version in `pyproject.toml`, `src/mantishrimp/__init__.py`, and
-   `CITATION.cff`, including its `date-released` field.
+1. Update the version in `pyproject.toml` and `src/mantishrimp/__init__.py`.
 2. Move the relevant entries from `CHANGELOG.md` under the new version and set
    its release date.
 3. Confirm author, ORCID, affiliation, and contribution metadata.
