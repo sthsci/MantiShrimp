@@ -25,7 +25,7 @@ work. For this mechanics change:
 ```bash
 git switch -c codex/additive-bound-adhesion
 git add src/mantishrimp/simulation.py script/simulator/assistant_function.py \
-  tests/test_simulation.py docs/model.md docs/releasing.md CHANGELOG.md \
+  docs/model.md docs/releasing.md CHANGELOG.md \
   pyproject.toml src/mantishrimp/__init__.py CITATION.cff
 git add figures/abm_schematic_drafts/plot_force_and_binding.py \
   figures/abm_schematic_drafts/force_and_binding_rules_additive.png \
@@ -73,7 +73,7 @@ upload.
 
    ```bash
    python -m pip install -e '.[all,test]'
-   python -m pytest
+   python -m pytest  # Requires the local, untracked tests/ directory.
    python .github/scripts/check_release_version.py
    python -m build
    python -m twine check --strict dist/*

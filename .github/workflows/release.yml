@@ -28,6 +28,7 @@ jobs:
           python -m pip install -e ".[all,test]"
 
       - name: Run tests
+        if: ${{ hashFiles('tests/**/*.py') != '' }}
         run: python -m pytest
 
       - name: Check release version

@@ -229,6 +229,9 @@ for machine-readable citation metadata.
 
 ## Development
 
+The `tests/` directory is kept locally and is not included in GitHub checkouts.
+Run `pytest` below only when those local test files are available.
+
 ```bash
 python -m pip install -e '.[all,test]'
 pytest
