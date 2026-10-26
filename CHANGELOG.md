@@ -16,6 +16,10 @@ The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Damage, repair, exhaustion and confined-boundary reflections now use batched
+  NumPy operations. Binding checks visit only existing bonds and eligible pairs,
+  preserving the order of random draws. Floating-point reductions can differ
+  slightly from the previous per-target calculations.
 - Shared force calculation now uses batched NumPy operations instead of Python
   loops over cell pairs. Both package and legacy script calls use this routine,
   including the assistant helper's pairwise output. The force rules, adaptive

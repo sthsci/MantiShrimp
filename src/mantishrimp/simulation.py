@@ -133,23 +133,17 @@ def _apply_boundary(
         ) % domain.height
         return
 
-    active = np.flatnonzero(alive)
-    for index in active:
-        radius = radii[index]
-        x_low, x_high = domain.x_min + radius, domain.x_max - radius
-        y_low, y_high = domain.y_min + radius, domain.y_max - radius
-        while positions[index, 0] < x_low or positions[index, 0] > x_high:
-            if positions[index, 0] < x_low:
-                positions[index, 0] = 2 * x_low - positions[index, 0]
-            else:
-                positions[index, 0] = 2 * x_high - positions[index, 0]
-            polarities[index, 0] *= -1
-        while positions[index, 1] < y_low or positions[index, 1] > y_high:
-            if positions[index, 1] < y_low:
-                positions[index, 1] = 2 * y_low - positions[index, 1]
-            else:
-                positions[index, 1] = 2 * y_high - positions[index, 1]
-            polarities[index, 1] *= -1
+    lower = np.array([domain.x_min, domain.y_min]) + radii[:, None]
+    upper = np.array([domain.x_max, domain.y_max]) - radii[:, None]
+    while True:
+        below = alive[:, None] & (positions < lower)
+        above = alive[:, None] & (positions > upper)
+        outside = below | above
+        if not outside.any():
+            break
+        positions[below] = 2 * lower[below] - positions[below]
+        positions[above] = 2 * upper[above] - positions[above]
+        polarities[outside] *= -1
 
 
 def _bond_transitions(bound, distance, eligible, mechanics: MechanicsConfig, contact_distance, dt, rng):
@@ -157,17 +151,17 @@ def _bond_transitions(bound, distance, eligible, mechanics: MechanicsConfig, con
     p_bind = 1.0 - np.exp(-mechanics.binding_rate * dt)
     p_unbind = 1.0 - np.exp(-mechanics.unbinding_rate * dt)
     capture_cutoff = mechanics.capture_radius_factor * contact_distance
-    for killer_id in range(bound.shape[0]):
-        for target_id in range(bound.shape[1]):
-            if bound[killer_id, target_id]:
-                separation = distance[killer_id, target_id] > capture_cutoff
-                stochastic = rng.random() < p_unbind
-                if separation or stochastic:
-                    bound[killer_id, target_id] = False
-                    yield killer_id, target_id, "separation" if separation else "stochastic"
-            elif eligible[killer_id, target_id] and rng.random() < p_bind:
-                bound[killer_id, target_id] = True
-                yield killer_id, target_id, None
+    # Keep row-major draw order, including productivity draws between yields.
+    for killer_id, target_id in np.argwhere(bound | eligible):
+        if bound[killer_id, target_id]:
+            separation = distance[killer_id, target_id] > capture_cutoff
+            stochastic = rng.random() < p_unbind
+            if separation or stochastic:
+                bound[killer_id, target_id] = False
+                yield killer_id, target_id, "separation" if separation else "stochastic"
+        elif rng.random() < p_bind:
+            bound[killer_id, target_id] = True
+            yield killer_id, target_id, None
 
 
 def _forces(
@@ -528,73 +522,66 @@ class Simulation:
             )
             _apply_boundary(positions, polarities, radii, alive, config.domain)
 
-            exhaustion_increment = np.zeros(n_k, dtype=float)
-            for target_id in range(n_t):
-                active_killers = np.flatnonzero(
-                    bound[:, target_id] & productive[:, target_id]
-                )
-                individual_rates = np.array([], dtype=float)
-                if active_killers.size:
-                    individual_rates = target_state[target_id] * (
-                        config.cytotoxicity.killing_rate_min
-                        + (
-                            config.cytotoxicity.killing_rate_max
-                            - config.cytotoxicity.killing_rate_min
-                        )
-                        * killer_state[active_killers]
-                    )
-                    exhaustion_increment[active_killers] += (
-                        config.cytotoxicity.exhaustion_rate_min
-                        + (
-                            config.cytotoxicity.exhaustion_rate_max
-                            - config.cytotoxicity.exhaustion_rate_min
-                        )
-                        * target_state[target_id]
-                    ) * dt
-                # Productive conjugation exhausts killers even after the target dies.
-                if not target_alive[target_id]:
-                    continue
-                target_damage[target_id] += float(individual_rates.sum()) * dt
-                damage_contribution[active_killers, target_id] += individual_rates * dt
-                target_damage[target_id] -= (
-                    config.cytotoxicity.recovery_rate * target_damage[target_id] * dt
-                )
-                target_damage[target_id] = max(0.0, target_damage[target_id])
-                if config.cytotoxicity.instant_kill and active_killers.size:
-                    target_damage[target_id] = config.cytotoxicity.death_threshold
+            active_pairs = bound & productive
+            cytotoxicity = config.cytotoxicity
+            # Productive conjugation exhausts killers even after the target dies.
+            exhaustion_increment = (
+                active_pairs * (
+                    cytotoxicity.exhaustion_rate_min
+                    + (cytotoxicity.exhaustion_rate_max - cytotoxicity.exhaustion_rate_min)
+                    * target_state
+                ) * dt
+            ).sum(axis=1)
+            individual_rates = active_pairs * target_state * (
+                cytotoxicity.killing_rate_min
+                + (cytotoxicity.killing_rate_max - cytotoxicity.killing_rate_min)
+                * killer_state[:, None]
+            )
+            individual_rates[:, ~target_alive] = 0.0
+            target_damage[target_alive] += individual_rates[:, target_alive].sum(axis=0) * dt
+            damage_contribution += individual_rates * dt
+            target_damage[target_alive] -= (
+                cytotoxicity.recovery_rate * target_damage[target_alive] * dt
+            )
+            np.maximum(target_damage, 0.0, out=target_damage)
+            if cytotoxicity.instant_kill:
+                target_damage[target_alive & active_pairs.any(axis=0)] = cytotoxicity.death_threshold
 
-                if target_damage[target_id] >= config.cytotoxicity.death_threshold:
-                    target_damage[target_id] = config.cytotoxicity.death_threshold
-                    target_alive[target_id] = False
-                    alive[n_k + target_id] = False
-                    contributors = np.flatnonzero(damage_contribution[:, target_id] > 0)
-                    primary = (
-                        int(np.argmax(damage_contribution[:, target_id]))
-                        if contributors.size
-                        else None
-                    )
-                    if config.cytotoxicity.instant_kill and active_killers.size:
+            dying = np.flatnonzero(target_alive & (target_damage >= cytotoxicity.death_threshold))
+            target_damage[dying] = cytotoxicity.death_threshold
+            target_alive[dying] = False
+            alive[n_k + dying] = False
+            for target_id in dying:
+                contributors = np.flatnonzero(damage_contribution[:, target_id] > 0)
+                primary = (
+                    int(np.argmax(damage_contribution[:, target_id]))
+                    if contributors.size
+                    else None
+                )
+                if cytotoxicity.instant_kill:
+                    active_killers = np.flatnonzero(active_pairs[:, target_id])
+                    if active_killers.size:
                         primary = int(active_killers[0])
-                    if primary is not None:
-                        primary_killer[target_id] = primary
-                    _event(
-                        events,
-                        time=next_time,
-                        step=next_step,
-                        name="target_killed",
-                        killer_id=primary,
-                        target_id=target_id,
-                        value=1.0,
-                    )
-                    _event(
-                        events,
-                        time=next_time,
-                        step=next_step,
-                        name="target_died",
-                        killer_id=primary,
-                        target_id=target_id,
-                        value=float(target_damage[target_id]),
-                    )
+                if primary is not None:
+                    primary_killer[target_id] = primary
+                _event(
+                    events,
+                    time=next_time,
+                    step=next_step,
+                    name="target_killed",
+                    killer_id=primary,
+                    target_id=target_id,
+                    value=1.0,
+                )
+                _event(
+                    events,
+                    time=next_time,
+                    step=next_step,
+                    name="target_died",
+                    killer_id=primary,
+                    target_id=target_id,
+                    value=float(target_damage[target_id]),
+                )
 
             killer_state *= np.clip(1.0 - exhaustion_increment, 0.0, 1.0)
             killer_state = np.clip(killer_state, 0.0, 1.0)
