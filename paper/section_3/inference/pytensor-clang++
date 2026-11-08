@@ -1,0 +1,9 @@
+#!/bin/bash
+# shortcut: remove obsolete -ld64 on this Mac; retire after upgrading to a fixed PyTensor release.
+args=()
+for arg in "$@"; do
+    if [[ "$arg" != "-ld64" ]]; then
+        args+=("$arg")
+    fi
+done
+exec /usr/bin/clang++ "${args[@]}"

@@ -1,3 +1,17 @@
+# Keep paper scripts and notebooks, but skip checkpoints and generated run copies.
+/paper/**
+!/paper/**/
+!/paper/**/*.py
+!/paper/**/*.sh
+!/paper/**/*.ipynb
+!/paper/section_3/inference/pytensor-clang++
+/paper/**/.ipynb_checkpoints/
+/paper/**/runs/
+/paper/**/run_*/
+/paper/**/backups/
+/paper/**/outputs*/
+/paper/**/results*/
+
 .DS_Store
 __pycache__/
 *.py[cod]
